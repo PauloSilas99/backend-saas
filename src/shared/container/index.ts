@@ -1,0 +1,38 @@
+import { container } from 'tsyringe';
+import { prisma } from '@config/database';
+import { AuthRepository } from '@modules/auth/auth.repository';
+import { AuthService } from '@modules/auth/auth.service';
+import { UsersRepository } from '@modules/users/users.repository';
+import { UsersService } from '@modules/users/users.service';
+import { CompaniesRepository } from '@modules/companies/companies.repository';
+import { CompaniesService } from '@modules/companies/companies.service';
+import { ActionPlansRepository } from '@modules/action-plans/action-plans.repository';
+import { ActionPlansService } from '@modules/action-plans/action-plans.service';
+import { ImportsRepository } from '@modules/imports/imports.repository';
+import { ImportsService } from '@modules/imports/imports.service';
+import { AnalyticsRepository } from '@modules/analytics/analytics.repository';
+import { AnalyticsService } from '@modules/analytics/analytics.service';
+import { BillingRepository } from '@modules/billing/billing.repository';
+import { BillingService } from '@modules/billing/billing.service';
+import { AuditService } from '@shared/audit/audit.service';
+import { createBillingProvider } from '@modules/billing/providers';
+
+export function registerDependencies(): void {
+  container.registerInstance('PrismaClient', prisma);
+  container.registerSingleton(AuditService);
+  container.registerSingleton(AuthRepository);
+  container.registerSingleton(AuthService);
+  container.registerSingleton(UsersRepository);
+  container.registerSingleton(UsersService);
+  container.registerSingleton(CompaniesRepository);
+  container.registerSingleton(CompaniesService);
+  container.registerSingleton(ActionPlansRepository);
+  container.registerSingleton(ActionPlansService);
+  container.registerSingleton(ImportsRepository);
+  container.registerSingleton(ImportsService);
+  container.registerSingleton(AnalyticsRepository);
+  container.registerSingleton(AnalyticsService);
+  container.registerSingleton(BillingRepository);
+  container.registerSingleton(BillingService);
+  container.registerInstance('BillingProvider', createBillingProvider());
+}

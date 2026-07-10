@@ -1,0 +1,292 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum Role {
+  ADMIN
+  GESTOR
+  OPERACIONAL
+}
+
+enum SubscriptionStatus {
+  TRIALING
+  ACTIVE
+  PAST_DUE
+  CANCELED
+  INACTIVE
+}
+
+enum ImportStatus {
+  PENDING
+  PREVIEW
+  PROCESSING
+  COMPLETED
+  FAILED
+  PARTIAL
+}
+
+enum ActionStatus {
+  PENDING
+  IN_PROGRESS
+  COMPLETED
+  DELAYED
+  CANCELED
+}
+
+enum ActionPriority {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum PaymentStatus {
+  PENDING
+  PAID
+  FAILED
+  REFUNDED
+}
+
+model User {
+  id           String   @id @default(uuid())
+  email        String   @unique
+  passwordHash String   @map("password_hash")
+  name         String
+  isActive     Boolean  @default(true) @map("is_active")
+  tokenVersion Int      @default(0) @map("token_version")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  memberships    Membership[]
+  refreshTokens  RefreshToken[]
+  actionPlans    ActionPlan[]    @relation("ActionPlanOwner")
+  assignedRows   ActionPlanRow[] @relation("AssignedRows")
+  auditLogs      AuditLog[]
+  createdImports Import[]        @relation("ImportCreator")
+
+  @@map("users")
+}
+
+model Tenant {
+  id        String   @id @default(uuid())
+  name      String
+  slug      String   @unique
+  document  String?
+  isActive  Boolean  @default(true) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  memberships  Membership[]
+  units        Unit[]
+  actionPlans  ActionPlan[]
+  imports      Import[]
+  subscription Subscription?
+  payments     Payment[]
+  auditLogs    AuditLog[]
+
+  @@map("tenants")
+}
+
+model Unit {
+  id        String   @id @default(uuid())
+  tenantId  String   @map("tenant_id")
+  name      String
+  code      String?
+  isActive  Boolean  @default(true) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  tenant      Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  actionPlans ActionPlan[]
+  rows        ActionPlanRow[]
+
+  @@unique([tenantId, name])
+  @@map("units")
+}
+
+model Membership {
+  id        String   @id @default(uuid())
+  userId    String   @map("user_id")
+  tenantId  String   @map("tenant_id")
+  role      Role
+  isActive  Boolean  @default(true) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, tenantId])
+  @@map("memberships")
+}
+
+model RefreshToken {
+  id        String    @id @default(uuid())
+  userId    String    @map("user_id")
+  tokenHash String    @map("token_hash")
+  expiresAt DateTime  @map("expires_at")
+  revokedAt DateTime? @map("revoked_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([tokenHash])
+  @@map("refresh_tokens")
+}
+
+model Plan {
+  id            String   @id @default(uuid())
+  name          String
+  code          String   @unique
+  description   String?
+  priceCents    Int      @map("price_cents")
+  currency      String   @default("BRL")
+  interval      String   @default("month")
+  features      Json?
+  isActive      Boolean  @default(true) @map("is_active")
+  externalId    String?  @map("external_id")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  subscriptions Subscription[]
+
+  @@map("plans")
+}
+
+model Subscription {
+  id                   String             @id @default(uuid())
+  tenantId             String             @unique @map("tenant_id")
+  planId               String             @map("plan_id")
+  status               SubscriptionStatus @default(INACTIVE)
+  externalId           String?            @map("external_id")
+  currentPeriodStart   DateTime?          @map("current_period_start")
+  currentPeriodEnd     DateTime?          @map("current_period_end")
+  cancelAtPeriodEnd    Boolean            @default(false) @map("cancel_at_period_end")
+  createdAt            DateTime           @default(now()) @map("created_at")
+  updatedAt            DateTime           @updatedAt @map("updated_at")
+
+  tenant   Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  plan     Plan      @relation(fields: [planId], references: [id])
+  payments Payment[]
+
+  @@map("subscriptions")
+}
+
+model Payment {
+  id             String        @id @default(uuid())
+  tenantId       String        @map("tenant_id")
+  subscriptionId String?       @map("subscription_id")
+  amountCents    Int           @map("amount_cents")
+  currency       String        @default("BRL")
+  status         PaymentStatus @default(PENDING)
+  externalId     String?       @map("external_id")
+  paidAt         DateTime?     @map("paid_at")
+  metadata       Json?
+  createdAt      DateTime      @default(now()) @map("created_at")
+  updatedAt      DateTime      @updatedAt @map("updated_at")
+
+  tenant       Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  subscription Subscription? @relation(fields: [subscriptionId], references: [id])
+
+  @@map("payments")
+}
+
+model ActionPlan {
+  id          String   @id @default(uuid())
+  tenantId    String   @map("tenant_id")
+  unitId      String?  @map("unit_id")
+  ownerId     String   @map("owner_id")
+  title       String
+  description String?
+  year        Int?
+  month       Int?
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  tenant Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  unit   Unit?           @relation(fields: [unitId], references: [id])
+  owner  User            @relation("ActionPlanOwner", fields: [ownerId], references: [id])
+  rows   ActionPlanRow[]
+  imports Import[]
+
+  @@map("action_plans")
+}
+
+model ActionPlanRow {
+  id              String         @id @default(uuid())
+  actionPlanId    String         @map("action_plan_id")
+  unitId          String?        @map("unit_id")
+  responsibleId   String?        @map("responsible_id")
+  externalKey     String?        @map("external_key")
+  title           String
+  description     String?
+  status          ActionStatus   @default(PENDING)
+  priority        ActionPriority @default(MEDIUM)
+  dueDate         DateTime?      @map("due_date")
+  completedAt     DateTime?      @map("completed_at")
+  responsibleName String?        @map("responsible_name")
+  unitName        String?        @map("unit_name")
+  metadata        Json?
+  createdAt       DateTime       @default(now()) @map("created_at")
+  updatedAt       DateTime       @updatedAt @map("updated_at")
+
+  actionPlan  ActionPlan @relation(fields: [actionPlanId], references: [id], onDelete: Cascade)
+  unit        Unit?      @relation(fields: [unitId], references: [id])
+  responsible User?      @relation("AssignedRows", fields: [responsibleId], references: [id])
+
+  @@unique([actionPlanId, externalKey])
+  @@index([status])
+  @@index([priority])
+  @@index([dueDate])
+  @@map("action_plan_rows")
+}
+
+model Import {
+  id              String       @id @default(uuid())
+  tenantId        String       @map("tenant_id")
+  createdById     String       @map("created_by_id")
+  actionPlanId    String?      @map("action_plan_id")
+  filename        String
+  originalName    String       @map("original_name")
+  mimeType        String       @map("mime_type")
+  status          ImportStatus @default(PENDING)
+  totalRows       Int          @default(0) @map("total_rows")
+  successRows     Int          @default(0) @map("success_rows")
+  errorRows       Int          @default(0) @map("error_rows")
+  previewData     Json?        @map("preview_data")
+  errorReport     Json?        @map("error_report")
+  idempotencyKey  String?      @unique @map("idempotency_key")
+  confirmedAt     DateTime?    @map("confirmed_at")
+  createdAt       DateTime     @default(now()) @map("created_at")
+  updatedAt       DateTime     @updatedAt @map("updated_at")
+
+  tenant     Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  createdBy  User        @relation("ImportCreator", fields: [createdById], references: [id])
+  actionPlan ActionPlan? @relation(fields: [actionPlanId], references: [id])
+
+  @@map("imports")
+}
+
+model AuditLog {
+  id         String   @id @default(uuid())
+  tenantId   String?  @map("tenant_id")
+  userId     String?  @map("user_id")
+  action     String
+  resource   String
+  resourceId String?  @map("resource_id")
+  metadata   Json?
+  ip         String?
+  userAgent  String?  @map("user_agent")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  tenant Tenant? @relation(fields: [tenantId], references: [id])
+  user   User?   @relation(fields: [userId], references: [id])
+
+  @@index([action])
+  @@index([createdAt])
+  @@map("audit_logs")
+}

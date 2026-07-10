@@ -1,0 +1,13 @@
+services:
+  api:
+    build: .
+    ports:
+      - '3333:3333'
+    env_file:
+      - .env
+    volumes:
+      - uploads_data:/app/uploads
+    restart: unless-stopped
+
+volumes:
+  uploads_data:

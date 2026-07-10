@@ -1,0 +1,4 @@
+titulo,status,prioridade,responsavel,unidade,prazo,descricao,chave
+Implementar dashboard,pendente,alta,Operacional Demo,Matriz,2026-07-30,Criar cards KPI,imp-1
+Revisar contratos,em andamento,media,Gestor Demo,Filial SP,2026-08-05,Revisão jurídica,imp-2
+Auditar processos,atrasado,critica,Operacional Demo,Matriz,2026-07-01,Auditoria interna,imp-3
