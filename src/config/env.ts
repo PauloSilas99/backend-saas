@@ -28,6 +28,7 @@ const envSchema = z.object({
   ASAAS_WEBHOOK_TOKEN: z.string().optional().default(''),
   UPLOAD_MAX_SIZE_MB: z.coerce.number().default(10),
   UPLOAD_DIR: z.string().default('uploads'),
+  REDIS_URL: z.string().default('redis://localhost:6379'),
 });
 
 const parsed = envSchema.safeParse(process.env);

@@ -11,7 +11,18 @@ import { subscriptionGate } from '@middlewares/subscriptionGate';
 import { validate } from '@middlewares/validate';
 import { ImportsController } from './imports.controller';
 import { ImportsService } from './imports.service';
-import { confirmImportSchema } from './imports.schemas';
+import {
+  assertAllowedUploadMime,
+  assertAllowedExtension,
+} from './imports.file-validator';
+import {
+  columnMappingSchema,
+  confirmImportSchema,
+  importJobIdParamsSchema,
+  legacyConfirmImportSchema,
+  listImportsQuerySchema,
+  previewQuerySchema,
+} from './imports.schemas';
 
 const controller = new ImportsController();
 const router = Router();
@@ -30,22 +41,83 @@ const storage = multer.diskStorage({
 const upload = multer({
   storage,
   limits: { fileSize: env.UPLOAD_MAX_SIZE_MB * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    try {
+      assertAllowedExtension(file.originalname);
+      assertAllowedUploadMime(file.mimetype);
+      cb(null, true);
+    } catch (error) {
+      cb(error as Error);
+    }
+  },
 });
+
+const importRoles = roleGuard(Role.ADMIN, Role.GESTOR);
 
 router.use(authenticate, subscriptionGate);
 
+router.get(
+  '/',
+  importRoles,
+  validate({ query: listImportsQuerySchema }),
+  (req, res, next) => controller.list(req, res, next),
+);
+
+router.post(
+  '/',
+  importRoles,
+  upload.single('file'),
+  (req, res, next) => controller.upload(req, res, next),
+);
+
+router.get(
+  '/:jobId/columns',
+  importRoles,
+  validate({ params: importJobIdParamsSchema }),
+  (req, res, next) => controller.getColumns(req, res, next),
+);
+
+router.post(
+  '/:jobId/mapping',
+  importRoles,
+  validate({ params: importJobIdParamsSchema, body: columnMappingSchema }),
+  (req, res, next) => controller.saveMapping(req, res, next),
+);
+
+router.get(
+  '/:jobId/preview',
+  importRoles,
+  validate({ params: importJobIdParamsSchema, query: previewQuerySchema }),
+  (req, res, next) => controller.preview(req, res, next),
+);
+
+router.post(
+  '/:jobId/confirm',
+  importRoles,
+  validate({ params: importJobIdParamsSchema, body: confirmImportSchema }),
+  (req, res, next) => controller.confirm(req, res, next),
+);
+
+router.get(
+  '/:jobId',
+  importRoles,
+  validate({ params: importJobIdParamsSchema }),
+  (req, res, next) => controller.getById(req, res, next),
+);
+
+// Rotas legadas (compatibilidade)
 router.post(
   '/spreadsheet',
-  roleGuard(Role.ADMIN, Role.GESTOR),
+  importRoles,
   upload.single('file'),
   (req, res, next) => controller.upload(req, res, next),
 );
 
 router.post(
   '/spreadsheet/confirm',
-  roleGuard(Role.ADMIN, Role.GESTOR),
-  validate({ body: confirmImportSchema }),
-  (req, res, next) => controller.confirm(req, res, next),
+  importRoles,
+  validate({ body: legacyConfirmImportSchema }),
+  (req, res, next) => controller.legacyConfirm(req, res, next),
 );
 
 router.get('/:id/status', (req, res, next) => controller.status(req, res, next));

@@ -22,11 +22,20 @@ enum SubscriptionStatus {
 
 enum ImportStatus {
   PENDING
-  PREVIEW
   PROCESSING
+  READY_FOR_MAPPING
+  READY_FOR_PREVIEW
+  PREVIEW
+  PROCESSING_COMMIT
   COMPLETED
   FAILED
   PARTIAL
+}
+
+enum ImportRowStatus {
+  OK
+  WARNING
+  ERROR
 }
 
 enum ActionStatus {
@@ -253,12 +262,17 @@ model Import {
   filename        String
   originalName    String       @map("original_name")
   mimeType        String       @map("mime_type")
+  filePath        String       @default("") @map("file_path")
   status          ImportStatus @default(PENDING)
   totalRows       Int          @default(0) @map("total_rows")
   successRows     Int          @default(0) @map("success_rows")
   errorRows       Int          @default(0) @map("error_rows")
+  warningRows     Int          @default(0) @map("warning_rows")
+  headers         Json?
+  columnMapping   Json?        @map("column_mapping")
   previewData     Json?        @map("preview_data")
   errorReport     Json?        @map("error_report")
+  statusMessage   String?      @map("status_message")
   idempotencyKey  String?      @unique @map("idempotency_key")
   confirmedAt     DateTime?    @map("confirmed_at")
   createdAt       DateTime     @default(now()) @map("created_at")
@@ -267,8 +281,28 @@ model Import {
   tenant     Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   createdBy  User        @relation("ImportCreator", fields: [createdById], references: [id])
   actionPlan ActionPlan? @relation(fields: [actionPlanId], references: [id])
+  rows       ImportRow[]
 
+  @@index([tenantId, createdAt])
   @@map("imports")
+}
+
+model ImportRow {
+  id         String          @id @default(uuid())
+  importId   String          @map("import_id")
+  lineNumber Int             @map("line_number")
+  rawData    Json            @map("raw_data")
+  mappedData Json?           @map("mapped_data")
+  status     ImportRowStatus @default(OK)
+  messages   Json?
+  createdAt  DateTime        @default(now()) @map("created_at")
+  updatedAt  DateTime        @updatedAt @map("updated_at")
+
+  import Import @relation(fields: [importId], references: [id], onDelete: Cascade)
+
+  @@unique([importId, lineNumber])
+  @@index([importId, status])
+  @@map("import_rows")
 }
 
 model AuditLog {
