@@ -1,5 +1,4 @@
 import { inject, injectable } from 'tsyringe';
-import bcrypt from 'bcryptjs';
 import { Role } from '@prisma/client';
 import {
   ConflictError,
@@ -8,6 +7,12 @@ import {
 } from '@shared/errors/AppError';
 import { AuditService } from '@shared/audit/audit.service';
 import { AuthUser } from '@/types/auth';
+import {
+  canAssignRole,
+  canManageUsers,
+  isOperacional,
+  isPlatformAdmin,
+} from '@shared/helpers/rbac';
 import { UsersRepository } from './users.repository';
 import { CreateUserInput, UpdateUserInput } from './users.schemas';
 
@@ -19,23 +24,26 @@ export class UsersService {
   ) {}
 
   async list(actor: AuthUser) {
-    this.assertCanManageUsers(actor);
-    const memberships = await this.usersRepository.listByTenant(actor.tenantId);
-
-    if (actor.role === Role.GESTOR) {
-      return memberships
-        .filter((m) => m.role !== Role.ADMIN)
-        .map((m) => this.mapMembership(m));
+    if (isPlatformAdmin(actor)) {
+      throw new ForbiddenError('Admin da plataforma não lista usuários operacionais');
+    }
+    if (!canManageUsers(actor)) {
+      throw new ForbiddenError('Apenas gerente gerencia usuários');
     }
 
-    return memberships.map((m) => this.mapMembership(m));
+    const memberships = await this.usersRepository.listByTenant(actor.tenantId);
+    return memberships
+      .filter((m) => m.role !== Role.PLATFORM_ADMIN)
+      .map((m) => this.mapMembership(m));
   }
 
   async create(actor: AuthUser, input: CreateUserInput) {
-    this.assertCanManageUsers(actor);
+    if (!canManageUsers(actor)) {
+      throw new ForbiddenError('Apenas gerente cria usuários');
+    }
 
-    if (actor.role === Role.GESTOR && input.role === Role.ADMIN) {
-      throw new ForbiddenError('Gestor não pode criar admin');
+    if (!canAssignRole(actor.role, input.role)) {
+      throw new ForbiddenError('Não é permitido atribuir este perfil');
     }
 
     const existing = await this.usersRepository.findByEmail(input.email.toLowerCase());
@@ -43,6 +51,7 @@ export class UsersService {
       throw new ConflictError('E-mail já cadastrado');
     }
 
+    const bcrypt = await import('bcryptjs');
     const passwordHash = await bcrypt.hash(input.password, 10);
     const result = await this.usersRepository.createInTenant({
       name: input.name,
@@ -71,19 +80,21 @@ export class UsersService {
   }
 
   async update(actor: AuthUser, userId: string, input: UpdateUserInput) {
-    this.assertCanManageUsers(actor);
+    if (!canManageUsers(actor)) {
+      throw new ForbiddenError('Apenas gerente atualiza usuários');
+    }
 
     const membership = await this.usersRepository.findMembership(userId, actor.tenantId);
     if (!membership) {
       throw new NotFoundError('Usuário não encontrado nesta empresa');
     }
 
-    if (actor.role === Role.GESTOR && membership.role === Role.ADMIN) {
-      throw new ForbiddenError('Gestor não pode alterar admin');
+    if (membership.role === Role.PLATFORM_ADMIN) {
+      throw new ForbiddenError();
     }
 
-    if (actor.role === Role.GESTOR && input.role === Role.ADMIN) {
-      throw new ForbiddenError('Gestor não pode promover a admin');
+    if (input.role !== undefined && !canAssignRole(actor.role, input.role)) {
+      throw new ForbiddenError('Não é permitido atribuir este perfil');
     }
 
     if (input.name !== undefined || input.isActive !== undefined) {
@@ -111,26 +122,28 @@ export class UsersService {
   }
 
   async getById(actor: AuthUser, userId: string) {
-    if (actor.role === Role.OPERACIONAL && actor.id !== userId) {
+    if (isPlatformAdmin(actor)) {
+      throw new ForbiddenError();
+    }
+
+    if (isOperacional(actor) && actor.id !== userId) {
       throw new ForbiddenError('Operacional só pode ver os próprios dados');
     }
 
-    if (actor.role !== Role.OPERACIONAL) {
-      this.assertCanManageUsers(actor);
+    if (!isOperacional(actor) && !canManageUsers(actor) && actor.role !== Role.GESTOR) {
+      throw new ForbiddenError();
     }
 
-    const membership = await this.usersRepository.findMembership(userId, actor.tenantId);
-    if (!membership) {
-      throw new NotFoundError('Usuário não encontrado');
+    // Gestor can view users in company (read), gerente manages
+    if (actor.role === Role.GESTOR || canManageUsers(actor) || actor.id === userId) {
+      const membership = await this.usersRepository.findMembership(userId, actor.tenantId);
+      if (!membership) {
+        throw new NotFoundError('Usuário não encontrado');
+      }
+      return this.mapMembership(membership);
     }
 
-    return this.mapMembership(membership);
-  }
-
-  private assertCanManageUsers(actor: AuthUser) {
-    if (actor.role === Role.OPERACIONAL) {
-      throw new ForbiddenError('Operacional não gerencia usuários');
-    }
+    throw new ForbiddenError();
   }
 
   private mapMembership(membership: {

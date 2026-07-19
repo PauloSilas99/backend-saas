@@ -1,18 +1,33 @@
 import { describe, expect, it } from 'vitest';
-import { hasRequiredRole, isAtLeast } from '@shared/helpers/rbac';
+import {
+  canApproveActions,
+  hasRequiredRole,
+  isAtLeast,
+  resolveCompletionTargetStatus,
+} from '@shared/helpers/rbac';
 import { Role } from '@prisma/client';
 import { hashToken, generateIdempotencyKey } from '@shared/helpers/crypto';
 import { AppError, ForbiddenError } from '@shared/errors/AppError';
 
 describe('RBAC helpers', () => {
   it('checks allowed roles', () => {
-    expect(hasRequiredRole(Role.ADMIN, [Role.ADMIN, Role.GESTOR])).toBe(true);
-    expect(hasRequiredRole(Role.OPERACIONAL, [Role.ADMIN, Role.GESTOR])).toBe(false);
+    expect(hasRequiredRole(Role.GERENTE, [Role.GERENTE, Role.GESTOR])).toBe(true);
+    expect(hasRequiredRole(Role.OPERACIONAL, [Role.GERENTE, Role.GESTOR])).toBe(false);
   });
 
   it('compares hierarchy', () => {
-    expect(isAtLeast(Role.ADMIN, Role.GESTOR)).toBe(true);
+    expect(isAtLeast(Role.GERENTE, Role.GESTOR)).toBe(true);
     expect(isAtLeast(Role.OPERACIONAL, Role.GESTOR)).toBe(false);
+  });
+
+  it('aplica aprovação adaptativa', () => {
+    expect(canApproveActions({ role: Role.GESTOR }, true)).toBe(true);
+    expect(canApproveActions({ role: Role.GERENTE }, true)).toBe(false);
+    expect(canApproveActions({ role: Role.GERENTE }, false)).toBe(true);
+    expect(resolveCompletionTargetStatus({ role: Role.OPERACIONAL }, true)).toBe(
+      'WAITING_APPROVAL',
+    );
+    expect(resolveCompletionTargetStatus({ role: Role.GERENTE }, false)).toBe('COMPLETED');
   });
 });
 

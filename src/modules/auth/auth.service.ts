@@ -55,7 +55,7 @@ export class AuthService {
       passwordHash,
       tenantName,
       tenantSlug,
-      role: Role.GESTOR,
+      role: Role.GERENTE,
     });
 
     const tokens = await this.issueTokens({

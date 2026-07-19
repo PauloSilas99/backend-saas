@@ -9,3 +9,4 @@ coverage/
 .idea/
 *.xlsx
 !fixtures/**
+atividade/

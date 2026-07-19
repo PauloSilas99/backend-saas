@@ -6,6 +6,8 @@ import actionPlansRoutes from '@modules/action-plans/action-plans.routes';
 import importsRoutes from '@modules/imports/imports.routes';
 import analyticsRoutes from '@modules/analytics/analytics.routes';
 import billingRoutes from '@modules/billing/billing.routes';
+import columnsRoutes from '@modules/columns/columns.routes';
+import risksRoutes from '@modules/risks/risks.routes';
 
 const router = Router();
 
@@ -20,5 +22,7 @@ router.use('/action-plans', actionPlansRoutes);
 router.use('/imports', importsRoutes);
 router.use('/analytics', analyticsRoutes);
 router.use('/billing', billingRoutes);
+router.use('/columns', columnsRoutes);
+router.use('/risks', risksRoutes);
 
 export default router;

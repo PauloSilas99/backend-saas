@@ -52,7 +52,7 @@ const upload = multer({
   },
 });
 
-const importRoles = roleGuard(Role.ADMIN, Role.GESTOR);
+const importRoles = roleGuard(Role.GERENTE, Role.GESTOR);
 
 router.use(authenticate, subscriptionGate);
 

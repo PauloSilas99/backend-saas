@@ -2,6 +2,7 @@ import { inject, injectable } from 'tsyringe';
 import { ActionStatus, Role } from '@prisma/client';
 import { ForbiddenError } from '@shared/errors/AppError';
 import { AuthUser } from '@/types/auth';
+import { isPlatformAdmin } from '@shared/helpers/rbac';
 import { AnalyticsRepository, AnalyticsScope } from './analytics.repository';
 import { AnalyticsFilterInput } from './analytics.schemas';
 
@@ -33,13 +34,16 @@ export class AnalyticsService {
   }
 
   private buildScope(actor: AuthUser, filters: AnalyticsFilterInput): AnalyticsScope {
-    let tenantId = actor.tenantId;
-
     if (filters.tenantId && filters.tenantId !== actor.tenantId) {
-      if (actor.role !== Role.ADMIN) {
-        throw new ForbiddenError('Sem acesso a analytics de outra empresa');
-      }
-      tenantId = filters.tenantId;
+      throw new ForbiddenError('Sem acesso a analytics de outra empresa');
+    }
+
+    const tenantId = actor.tenantId;
+
+    if (isPlatformAdmin(actor)) {
+      throw new ForbiddenError(
+        'Admin da plataforma não acessa analytics operacionais das empresas',
+      );
     }
 
     const scope: AnalyticsScope = {

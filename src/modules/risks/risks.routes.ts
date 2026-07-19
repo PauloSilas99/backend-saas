@@ -4,22 +4,28 @@ import { authenticate } from '@middlewares/authenticate';
 import { roleGuard } from '@middlewares/roleGuard';
 import { subscriptionGate } from '@middlewares/subscriptionGate';
 import { validate } from '@middlewares/validate';
-import { UsersController } from './users.controller';
-import { createUserSchema, updateUserSchema } from './users.schemas';
+import { RisksController } from './risks.controller';
+import {
+  createRiskSchema,
+  listRisksQuerySchema,
+  updateRiskSchema,
+} from './risks.schemas';
 
-const controller = new UsersController();
+const controller = new RisksController();
 const router = Router();
 
 router.use(authenticate, subscriptionGate);
 
-router.get('/', roleGuard(Role.GERENTE), (req, res, next) =>
-  controller.list(req, res, next),
+router.get(
+  '/',
+  validate({ query: listRisksQuerySchema }),
+  (req, res, next) => controller.list(req, res, next),
 );
 
 router.post(
   '/',
-  roleGuard(Role.GERENTE),
-  validate({ body: createUserSchema }),
+  roleGuard(Role.GERENTE, Role.GESTOR),
+  validate({ body: createRiskSchema }),
   (req, res, next) => controller.create(req, res, next),
 );
 
@@ -27,9 +33,15 @@ router.get('/:id', (req, res, next) => controller.getById(req, res, next));
 
 router.patch(
   '/:id',
-  roleGuard(Role.GERENTE),
-  validate({ body: updateUserSchema }),
+  roleGuard(Role.GERENTE, Role.GESTOR),
+  validate({ body: updateRiskSchema }),
   (req, res, next) => controller.update(req, res, next),
+);
+
+router.delete(
+  '/:id',
+  roleGuard(Role.GERENTE, Role.GESTOR),
+  (req, res, next) => controller.remove(req, res, next),
 );
 
 export default router;

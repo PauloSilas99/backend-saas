@@ -32,6 +32,10 @@ export class BillingService {
       throw new ForbiddenError('Operacional não gerencia billing');
     }
 
+    if (actor.role !== Role.GERENTE) {
+      throw new ForbiddenError('Apenas gerente gerencia billing');
+    }
+
     const plan = await this.billingRepository.findPlanByCode(input.planCode);
     if (!plan || !plan.isActive) {
       throw new NotFoundError('Plano não encontrado');
@@ -66,8 +70,8 @@ export class BillingService {
   }
 
   async portal(actor: AuthUser, input: PortalBody) {
-    if (actor.role === Role.OPERACIONAL) {
-      throw new ForbiddenError();
+    if (actor.role !== Role.GERENTE) {
+      throw new ForbiddenError('Apenas gerente gerencia billing');
     }
 
     const subscription = await this.billingRepository.findSubscriptionByTenant(actor.tenantId);

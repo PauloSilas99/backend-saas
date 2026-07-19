@@ -150,7 +150,7 @@ describe('ImportsService tenant isolation', () => {
     id: 'user-1',
     email: 'gestor@test.com',
     name: 'Gestor',
-    role: Role.GESTOR,
+    role: Role.GERENTE,
     tenantId: 'tenant-a',
     tokenVersion: 0,
   };

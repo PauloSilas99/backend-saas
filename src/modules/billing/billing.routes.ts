@@ -19,14 +19,14 @@ router.get('/subscription', (req, res, next) => controller.subscription(req, res
 
 router.post(
   '/checkout',
-  roleGuard(Role.ADMIN, Role.GESTOR),
+  roleGuard(Role.GERENTE),
   validate({ body: checkoutSchema }),
   (req, res, next) => controller.checkout(req, res, next),
 );
 
 router.post(
   '/portal',
-  roleGuard(Role.ADMIN, Role.GESTOR),
+  roleGuard(Role.GERENTE),
   validate({ body: portalSchema }),
   (req, res, next) => controller.portal(req, res, next),
 );

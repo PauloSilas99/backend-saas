@@ -7,7 +7,8 @@ datasource db {
 }
 
 enum Role {
-  ADMIN
+  PLATFORM_ADMIN
+  GERENTE
   GESTOR
   OPERACIONAL
 }
@@ -41,7 +42,9 @@ enum ImportRowStatus {
 enum ActionStatus {
   PENDING
   IN_PROGRESS
+  WAITING_APPROVAL
   COMPLETED
+  REJECTED
   DELAYED
   CANCELED
 }
@@ -60,6 +63,41 @@ enum PaymentStatus {
   REFUNDED
 }
 
+enum ColumnFieldType {
+  TEXT
+  LONG_TEXT
+  NUMBER
+  DATE
+  BOOLEAN
+  SELECT
+  MULTI_SELECT
+  USER
+  UNIT
+  CURRENCY
+  PERCENTAGE
+}
+
+enum ColumnHistoryAction {
+  CREATED
+  UPDATED
+  DELETED
+  RESTORED
+}
+
+enum RiskStatus {
+  OPEN
+  MITIGATING
+  CLOSED
+  ACCEPTED
+}
+
+enum RiskLevel {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
 model User {
   id           String   @id @default(uuid())
   email        String   @unique
@@ -70,12 +108,16 @@ model User {
   createdAt    DateTime @default(now()) @map("created_at")
   updatedAt    DateTime @updatedAt @map("updated_at")
 
-  memberships    Membership[]
-  refreshTokens  RefreshToken[]
-  actionPlans    ActionPlan[]    @relation("ActionPlanOwner")
-  assignedRows   ActionPlanRow[] @relation("AssignedRows")
-  auditLogs      AuditLog[]
-  createdImports Import[]        @relation("ImportCreator")
+  memberships      Membership[]
+  refreshTokens    RefreshToken[]
+  actionPlans      ActionPlan[]       @relation("ActionPlanOwner")
+  assignedRows     ActionPlanRow[]    @relation("AssignedRows")
+  auditLogs        AuditLog[]
+  createdImports   Import[]           @relation("ImportCreator")
+  actionHistories  ActionHistory[]    @relation("ActionHistoryActor")
+  columnHistories  ActionColumnHistory[] @relation("ColumnHistoryActor")
+  ownedRisks       Risk[]             @relation("RiskOwner")
+  deletedColumns   ActionColumn[]     @relation("ColumnDeletedBy")
 
   @@map("users")
 }
@@ -96,6 +138,8 @@ model Tenant {
   subscription Subscription?
   payments     Payment[]
   auditLogs    AuditLog[]
+  columns      ActionColumn[]
+  risks        Risk[]
 
   @@map("tenants")
 }
@@ -130,6 +174,7 @@ model Membership {
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
   @@unique([userId, tenantId])
+  @@index([tenantId, role, isActive])
   @@map("memberships")
 }
 
@@ -216,10 +261,10 @@ model ActionPlan {
   createdAt   DateTime @default(now()) @map("created_at")
   updatedAt   DateTime @updatedAt @map("updated_at")
 
-  tenant Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  unit   Unit?           @relation(fields: [unitId], references: [id])
-  owner  User            @relation("ActionPlanOwner", fields: [ownerId], references: [id])
-  rows   ActionPlanRow[]
+  tenant  Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  unit    Unit?           @relation(fields: [unitId], references: [id])
+  owner   User            @relation("ActionPlanOwner", fields: [ownerId], references: [id])
+  rows    ActionPlanRow[]
   imports Import[]
 
   @@map("action_plans")
@@ -240,18 +285,123 @@ model ActionPlanRow {
   responsibleName String?        @map("responsible_name")
   unitName        String?        @map("unit_name")
   metadata        Json?
+  deletedAt       DateTime?      @map("deleted_at")
   createdAt       DateTime       @default(now()) @map("created_at")
   updatedAt       DateTime       @updatedAt @map("updated_at")
 
-  actionPlan  ActionPlan @relation(fields: [actionPlanId], references: [id], onDelete: Cascade)
-  unit        Unit?      @relation(fields: [unitId], references: [id])
-  responsible User?      @relation("AssignedRows", fields: [responsibleId], references: [id])
+  actionPlan  ActionPlan      @relation(fields: [actionPlanId], references: [id], onDelete: Cascade)
+  unit        Unit?           @relation(fields: [unitId], references: [id])
+  responsible User?           @relation("AssignedRows", fields: [responsibleId], references: [id])
+  histories   ActionHistory[]
+  fieldValues ActionFieldValue[]
+  risks       Risk[]
 
   @@unique([actionPlanId, externalKey])
   @@index([status])
   @@index([priority])
   @@index([dueDate])
+  @@index([deletedAt])
   @@map("action_plan_rows")
+}
+
+model ActionHistory {
+  id            String        @id @default(uuid())
+  actionRowId   String        @map("action_row_id")
+  actorId       String?       @map("actor_id")
+  fromStatus    ActionStatus? @map("from_status")
+  toStatus      ActionStatus? @map("to_status")
+  comment       String?
+  metadata      Json?
+  createdAt     DateTime      @default(now()) @map("created_at")
+
+  actionRow ActionPlanRow @relation(fields: [actionRowId], references: [id], onDelete: Cascade)
+  actor     User?         @relation("ActionHistoryActor", fields: [actorId], references: [id])
+
+  @@index([actionRowId, createdAt])
+  @@map("action_histories")
+}
+
+model ActionColumn {
+  id          String          @id @default(uuid())
+  tenantId    String          @map("tenant_id")
+  name        String
+  label       String
+  fieldType   ColumnFieldType @map("field_type")
+  required    Boolean         @default(false)
+  options     Json?
+  sortOrder   Int             @default(0) @map("sort_order")
+  isActive    Boolean         @default(true) @map("is_active")
+  deletedAt   DateTime?       @map("deleted_at")
+  deletedById String?         @map("deleted_by_id")
+  deleteReason String?        @map("delete_reason")
+  createdAt   DateTime        @default(now()) @map("created_at")
+  updatedAt   DateTime        @updatedAt @map("updated_at")
+
+  tenant    Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  deletedBy User?                  @relation("ColumnDeletedBy", fields: [deletedById], references: [id])
+  values    ActionFieldValue[]
+  histories ActionColumnHistory[]
+
+  @@unique([tenantId, name])
+  @@index([tenantId, isActive, deletedAt])
+  @@map("action_columns")
+}
+
+model ActionColumnHistory {
+  id        String              @id @default(uuid())
+  columnId  String              @map("column_id")
+  actorId   String?             @map("actor_id")
+  action    ColumnHistoryAction
+  snapshot  Json
+  createdAt DateTime            @default(now()) @map("created_at")
+
+  column ActionColumn @relation(fields: [columnId], references: [id], onDelete: Cascade)
+  actor  User?        @relation("ColumnHistoryActor", fields: [actorId], references: [id])
+
+  @@index([columnId, createdAt])
+  @@map("action_column_histories")
+}
+
+model ActionFieldValue {
+  id          String   @id @default(uuid())
+  actionRowId String   @map("action_row_id")
+  columnId    String   @map("column_id")
+  value       Json?
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  actionRow ActionPlanRow @relation(fields: [actionRowId], references: [id], onDelete: Cascade)
+  column    ActionColumn  @relation(fields: [columnId], references: [id], onDelete: Cascade)
+
+  @@unique([actionRowId, columnId])
+  @@index([columnId])
+  @@map("action_field_values")
+}
+
+model Risk {
+  id              String     @id @default(uuid())
+  tenantId        String     @map("tenant_id")
+  actionRowId     String?    @map("action_row_id")
+  ownerId         String?    @map("owner_id")
+  title           String
+  description     String?
+  probability     RiskLevel  @default(MEDIUM)
+  impact          RiskLevel  @default(MEDIUM)
+  severity        RiskLevel  @default(MEDIUM)
+  status          RiskStatus @default(OPEN)
+  mitigationPlan  String?    @map("mitigation_plan")
+  dueDate         DateTime?  @map("due_date")
+  deletedAt       DateTime?  @map("deleted_at")
+  createdAt       DateTime   @default(now()) @map("created_at")
+  updatedAt       DateTime   @updatedAt @map("updated_at")
+
+  tenant    Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  actionRow ActionPlanRow? @relation(fields: [actionRowId], references: [id])
+  owner     User?          @relation("RiskOwner", fields: [ownerId], references: [id])
+
+  @@index([tenantId, status])
+  @@index([tenantId, dueDate])
+  @@map("risks")
 }
 
 model Import {

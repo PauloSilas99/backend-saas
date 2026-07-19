@@ -20,7 +20,7 @@ router.get('/', (req, res, next) => controller.list(req, res, next));
 
 router.post(
   '/',
-  roleGuard(Role.ADMIN),
+  roleGuard(Role.PLATFORM_ADMIN),
   validate({ body: createCompanySchema }),
   (req, res, next) => controller.create(req, res, next),
 );
@@ -29,7 +29,7 @@ router.get('/units', (req, res, next) => controller.listUnits(req, res, next));
 
 router.post(
   '/units',
-  roleGuard(Role.ADMIN, Role.GESTOR),
+  roleGuard(Role.GERENTE),
   validate({ body: createUnitSchema }),
   (req, res, next) => controller.createUnit(req, res, next),
 );
@@ -38,7 +38,7 @@ router.get('/:id', (req, res, next) => controller.getById(req, res, next));
 
 router.patch(
   '/:id',
-  roleGuard(Role.ADMIN, Role.GESTOR),
+  roleGuard(Role.PLATFORM_ADMIN, Role.GERENTE),
   validate({ body: updateCompanySchema }),
   (req, res, next) => controller.update(req, res, next),
 );

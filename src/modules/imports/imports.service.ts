@@ -1,7 +1,12 @@
 import { inject, injectable } from 'tsyringe';
 import fs from 'fs';
 import path from 'path';
-import { ImportRowStatus, ImportStatus, Role } from '@prisma/client';
+import { ImportRowStatus, ImportStatus } from '@prisma/client';
+import {
+  canImportSpreadsheet,
+  isOperacional,
+  isPlatformAdmin,
+} from '@shared/helpers/rbac';
 import { env } from '@config/env';
 import {
   ForbiddenError,
@@ -318,12 +323,18 @@ export class ImportsService {
   }
 
   private async assertJobAccess(actor: AuthUser, jobId: string) {
+    if (isPlatformAdmin(actor)) {
+      throw new ForbiddenError(
+        'Admin da plataforma não acessa importações das empresas',
+      );
+    }
+
     const record = await this.importsRepository.findById(jobId, actor.tenantId);
     if (!record) {
       throw new NotFoundError('Importação não encontrada');
     }
 
-    if (actor.role === Role.OPERACIONAL && record.createdById !== actor.id) {
+    if (isOperacional(actor)) {
       throw new ForbiddenError();
     }
 
@@ -335,8 +346,8 @@ export class ImportsService {
   }
 
   private assertCanImport(actor: AuthUser) {
-    if (actor.role === Role.OPERACIONAL) {
-      throw new ForbiddenError('Operacional não importa planilhas');
+    if (isPlatformAdmin(actor) || !canImportSpreadsheet(actor)) {
+      throw new ForbiddenError('Sem permissão para importar planilhas');
     }
   }
 }

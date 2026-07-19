@@ -14,12 +14,18 @@ import { AnalyticsRepository } from '@modules/analytics/analytics.repository';
 import { AnalyticsService } from '@modules/analytics/analytics.service';
 import { BillingRepository } from '@modules/billing/billing.repository';
 import { BillingService } from '@modules/billing/billing.service';
+import { ColumnsRepository } from '@modules/columns/columns.repository';
+import { ColumnsService } from '@modules/columns/columns.service';
+import { RisksRepository } from '@modules/risks/risks.repository';
+import { RisksService } from '@modules/risks/risks.service';
 import { AuditService } from '@shared/audit/audit.service';
+import { TenantPolicyService } from '@shared/policies/tenant-policy.service';
 import { createBillingProvider } from '@modules/billing/providers';
 
 export function registerDependencies(): void {
   container.registerInstance('PrismaClient', prisma);
   container.registerSingleton(AuditService);
+  container.registerSingleton(TenantPolicyService);
   container.registerSingleton(AuthRepository);
   container.registerSingleton(AuthService);
   container.registerSingleton(UsersRepository);
@@ -34,5 +40,9 @@ export function registerDependencies(): void {
   container.registerSingleton(AnalyticsService);
   container.registerSingleton(BillingRepository);
   container.registerSingleton(BillingService);
+  container.registerSingleton(ColumnsRepository);
+  container.registerSingleton(ColumnsService);
+  container.registerSingleton(RisksRepository);
+  container.registerSingleton(RisksService);
   container.registerInstance('BillingProvider', createBillingProvider());
 }

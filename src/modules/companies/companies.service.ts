@@ -7,6 +7,7 @@ import {
 } from '@shared/errors/AppError';
 import { AuditService } from '@shared/audit/audit.service';
 import { AuthUser } from '@/types/auth';
+import { isPlatformAdmin, isOperacional } from '@shared/helpers/rbac';
 import { CompaniesRepository } from './companies.repository';
 import {
   CreateCompanyInput,
@@ -22,7 +23,7 @@ export class CompaniesService {
   ) {}
 
   async list(actor: AuthUser) {
-    if (actor.role === Role.ADMIN) {
+    if (isPlatformAdmin(actor)) {
       return this.companiesRepository.listAll();
     }
 
@@ -32,7 +33,7 @@ export class CompaniesService {
   }
 
   async getById(actor: AuthUser, id: string) {
-    if (actor.role !== Role.ADMIN && actor.tenantId !== id) {
+    if (!isPlatformAdmin(actor) && actor.tenantId !== id) {
       throw new ForbiddenError('Sem acesso a esta empresa');
     }
 
@@ -42,8 +43,8 @@ export class CompaniesService {
   }
 
   async create(actor: AuthUser, input: CreateCompanyInput) {
-    if (actor.role !== Role.ADMIN) {
-      throw new ForbiddenError('Apenas admin cria empresas');
+    if (!isPlatformAdmin(actor)) {
+      throw new ForbiddenError('Apenas admin da plataforma cria empresas');
     }
 
     const existing = await this.companiesRepository.findBySlug(input.slug);
@@ -61,16 +62,16 @@ export class CompaniesService {
   }
 
   async update(actor: AuthUser, id: string, input: UpdateCompanyInput) {
-    if (actor.role === Role.OPERACIONAL) {
+    if (isOperacional(actor) || actor.role === Role.GESTOR) {
       throw new ForbiddenError();
     }
 
-    if (actor.role === Role.GESTOR && actor.tenantId !== id) {
-      throw new ForbiddenError('Gestor só atualiza a própria empresa');
+    if (actor.role === Role.GERENTE && actor.tenantId !== id) {
+      throw new ForbiddenError('Gerente só atualiza a própria empresa');
     }
 
-    if (actor.role !== Role.ADMIN && input.isActive !== undefined) {
-      throw new ForbiddenError('Apenas admin altera status da empresa');
+    if (!isPlatformAdmin(actor) && input.isActive !== undefined) {
+      throw new ForbiddenError('Apenas admin da plataforma altera status da empresa');
     }
 
     const company = await this.companiesRepository.findById(id);
@@ -89,16 +90,21 @@ export class CompaniesService {
   }
 
   async listUnits(actor: AuthUser, tenantId?: string) {
+    if (isPlatformAdmin(actor)) {
+      const targetTenantId = tenantId ?? actor.tenantId;
+      return this.companiesRepository.listUnits(targetTenantId);
+    }
+
     const targetTenantId = tenantId ?? actor.tenantId;
-    if (actor.role !== Role.ADMIN && targetTenantId !== actor.tenantId) {
+    if (targetTenantId !== actor.tenantId) {
       throw new ForbiddenError();
     }
     return this.companiesRepository.listUnits(targetTenantId);
   }
 
   async createUnit(actor: AuthUser, input: CreateUnitInput) {
-    if (actor.role === Role.OPERACIONAL) {
-      throw new ForbiddenError();
+    if (actor.role !== Role.GERENTE) {
+      throw new ForbiddenError('Apenas gerente cria unidades');
     }
 
     const unit = await this.companiesRepository.createUnit({

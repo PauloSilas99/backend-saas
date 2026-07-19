@@ -93,9 +93,12 @@ Provider padrão: `BILLING_PROVIDER=mock`. Troque para `stripe` quando tiver cha
 
 ## RBAC
 
-- **ADMIN**: gestão completa (usuários, empresas, planos, billing)
-- **GESTOR**: gestão operacional da própria empresa
-- **OPERACIONAL**: apenas próprios dados/ações
+- **PLATFORM_ADMIN**: dono da plataforma (métricas/sistema; sem conteúdo operacional das empresas)
+- **GERENTE**: admin da empresa (CRUD completo, colunas, usuários, importação; não resolve direto se houver gestor)
+- **GESTOR**: aprova conclusões e vê toda a empresa
+- **OPERACIONAL**: executa apenas as próprias ações
+
+Conta solo: registro cria **GERENTE** com trial; sem gestor ativo, o gerente conclui ações diretamente.
 
 Rotas protegidas por JWT + `roleGuard` + regras de domínio nos services. Feature gate de assinatura bloqueia acesso quando status ≠ `ACTIVE`/`TRIALING`.
 
