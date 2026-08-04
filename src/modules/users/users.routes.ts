@@ -5,14 +5,14 @@ import { roleGuard } from '@middlewares/roleGuard';
 import { subscriptionGate } from '@middlewares/subscriptionGate';
 import { validate } from '@middlewares/validate';
 import { UsersController } from './users.controller';
-import { createUserSchema, updateUserSchema } from './users.schemas';
+import { createUserSchema, listUsersQuerySchema, updateUserSchema } from './users.schemas';
 
 const controller = new UsersController();
 const router = Router();
 
 router.use(authenticate, subscriptionGate);
 
-router.get('/', roleGuard(Role.GERENTE), (req, res, next) =>
+router.get('/', validate({ query: listUsersQuerySchema }), (req, res, next) =>
   controller.list(req, res, next),
 );
 
@@ -30,6 +30,10 @@ router.patch(
   roleGuard(Role.GERENTE),
   validate({ body: updateUserSchema }),
   (req, res, next) => controller.update(req, res, next),
+);
+
+router.delete('/:id', roleGuard(Role.GERENTE), (req, res, next) =>
+  controller.remove(req, res, next),
 );
 
 export default router;

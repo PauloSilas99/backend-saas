@@ -2,10 +2,11 @@ import { Role } from '@prisma/client';
 import { AuthUser } from '@/types/auth';
 
 export const ROLE_HIERARCHY: Record<Role, number> = {
-  PLATFORM_ADMIN: 4,
-  GERENTE: 3,
-  GESTOR: 2,
-  OPERACIONAL: 1,
+  PLATFORM_ADMIN: 5,
+  GERENTE: 4,
+  GESTOR: 3,
+  OPERACIONAL: 2,
+  LEITOR: 1,
 };
 
 /** Roles that manage company operational data (not platform admin). */
@@ -34,6 +35,14 @@ export function isOperacional(actor: AuthUser | { role: Role }): boolean {
   return actor.role === Role.OPERACIONAL;
 }
 
+export function isLeitor(actor: AuthUser | { role: Role }): boolean {
+  return actor.role === Role.LEITOR;
+}
+
+export function isReadOnly(actor: AuthUser | { role: Role }): boolean {
+  return actor.role === Role.LEITOR;
+}
+
 /**
  * When the tenant has at least one active GESTOR, approvals go through GESTOR.
  * Gerente cannot resolve directly. Without a GESTOR (solo / micro), GERENTE resolves.
@@ -42,6 +51,7 @@ export function canApproveActions(
   actor: AuthUser | { role: Role },
   tenantHasGestor: boolean,
 ): boolean {
+  if (isReadOnly(actor)) return false;
   if (tenantHasGestor) {
     return actor.role === Role.GESTOR;
   }
@@ -71,6 +81,14 @@ export function canManageCompanySettings(actor: AuthUser | { role: Role }): bool
   return actor.role === Role.GERENTE || actor.role === Role.PLATFORM_ADMIN;
 }
 
+export function canCreateCompany(actor: AuthUser | { role: Role }): boolean {
+  return (
+    actor.role === Role.PLATFORM_ADMIN ||
+    actor.role === Role.GERENTE ||
+    actor.role === Role.GESTOR
+  );
+}
+
 export function canCreateActions(actor: AuthUser | { role: Role }): boolean {
   return actor.role === Role.GERENTE || actor.role === Role.GESTOR;
 }
@@ -88,17 +106,18 @@ export function canImportSpreadsheet(actor: AuthUser | { role: Role }): boolean 
 }
 
 export function canViewAllCompanyActions(actor: AuthUser | { role: Role }): boolean {
-  return actor.role === Role.GERENTE || actor.role === Role.GESTOR;
+  return (
+    actor.role === Role.GERENTE ||
+    actor.role === Role.GESTOR ||
+    actor.role === Role.LEITOR
+  );
 }
 
 export function canManageUsers(actor: AuthUser | { role: Role }): boolean {
   return actor.role === Role.GERENTE;
 }
 
-export function canAssignRole(
-  actorRole: Role,
-  targetRole: Role,
-): boolean {
+export function canAssignRole(actorRole: Role, targetRole: Role): boolean {
   if (actorRole === Role.PLATFORM_ADMIN) return true;
   if (actorRole !== Role.GERENTE) return false;
   return targetRole !== Role.PLATFORM_ADMIN;

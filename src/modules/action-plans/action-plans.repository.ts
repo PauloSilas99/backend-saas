@@ -95,6 +95,72 @@ export class ActionPlansRepository {
     return this.prisma.actionPlanRow.update({ where: { id }, data });
   }
 
+  async upsertFieldValues(
+    actionRowId: string,
+    tenantId: string,
+    values: Record<string, unknown>,
+  ) {
+    const columns = await this.prisma.actionColumn.findMany({
+      where: {
+        tenantId,
+        deletedAt: null,
+        OR: [
+          { id: { in: Object.keys(values) } },
+          { name: { in: Object.keys(values) } },
+        ],
+      },
+    });
+
+    const byKey = new Map<string, (typeof columns)[number]>();
+    for (const col of columns) {
+      byKey.set(col.id, col);
+      byKey.set(col.name, col);
+    }
+
+    for (const [key, raw] of Object.entries(values)) {
+      const column = byKey.get(key);
+      if (!column) continue;
+      await this.prisma.actionFieldValue.upsert({
+        where: {
+          actionRowId_columnId: { actionRowId, columnId: column.id },
+        },
+        create: {
+          actionRowId,
+          columnId: column.id,
+          value: raw as Prisma.InputJsonValue,
+        },
+        update: {
+          value: raw as Prisma.InputJsonValue,
+        },
+      });
+    }
+  }
+
+  findPrimaryPlan(tenantId: string) {
+    return this.prisma.actionPlan.findFirst({
+      where: { tenantId },
+      orderBy: { createdAt: 'asc' },
+    });
+  }
+
+  updatePlan(
+    id: string,
+    data: { title?: string; description?: string; unitId?: string | null },
+  ) {
+    return this.prisma.actionPlan.update({
+      where: { id },
+      data: {
+        title: data.title,
+        description: data.description,
+        unitId: data.unitId === undefined ? undefined : data.unitId,
+      },
+    });
+  }
+
+  getClient() {
+    return this.prisma;
+  }
+
   softDeleteRow(id: string) {
     return this.prisma.actionPlanRow.update({
       where: { id },
@@ -216,9 +282,5 @@ export class ActionPlansRepository {
 
   duplicateRow(sourceId: string, data: Prisma.ActionPlanRowCreateInput) {
     return this.prisma.actionPlanRow.create({ data });
-  }
-
-  getClient() {
-    return this.prisma;
   }
 }

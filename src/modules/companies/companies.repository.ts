@@ -38,6 +38,13 @@ export class CompaniesRepository {
     return this.prisma.tenant.update({ where: { id }, data });
   }
 
+  softDelete(id: string) {
+    return this.prisma.tenant.update({
+      where: { id },
+      data: { isActive: false },
+    });
+  }
+
   listUnits(tenantId: string) {
     return this.prisma.unit.findMany({
       where: { tenantId },
@@ -45,7 +52,22 @@ export class CompaniesRepository {
     });
   }
 
+  findUnit(id: string) {
+    return this.prisma.unit.findUnique({ where: { id } });
+  }
+
   createUnit(data: { tenantId: string; name: string; code?: string }) {
     return this.prisma.unit.create({ data });
+  }
+
+  updateUnit(id: string, data: { name?: string; code?: string; isActive?: boolean }) {
+    return this.prisma.unit.update({ where: { id }, data });
+  }
+
+  softDeleteUnit(id: string) {
+    return this.prisma.unit.update({
+      where: { id },
+      data: { isActive: false },
+    });
   }
 }

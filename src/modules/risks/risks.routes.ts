@@ -10,11 +10,15 @@ import {
   listRisksQuerySchema,
   updateRiskSchema,
 } from './risks.schemas';
+import { createControlSchema, updateControlSchema } from './controls.schemas';
 
 const controller = new RisksController();
 const router = Router();
 
 router.use(authenticate, subscriptionGate);
+
+router.get('/stats', (req, res, next) => controller.stats(req, res, next));
+router.get('/matrix', (req, res, next) => controller.matrix(req, res, next));
 
 router.get(
   '/',
@@ -27,6 +31,30 @@ router.post(
   roleGuard(Role.GERENTE, Role.GESTOR),
   validate({ body: createRiskSchema }),
   (req, res, next) => controller.create(req, res, next),
+);
+
+router.get('/:id/action-controls', (req, res, next) =>
+  controller.listControls(req, res, next),
+);
+
+router.post(
+  '/:id/action-controls',
+  roleGuard(Role.GERENTE, Role.GESTOR),
+  validate({ body: createControlSchema }),
+  (req, res, next) => controller.createControl(req, res, next),
+);
+
+router.patch(
+  '/:id/action-controls/:controlId',
+  roleGuard(Role.GERENTE, Role.GESTOR),
+  validate({ body: updateControlSchema }),
+  (req, res, next) => controller.updateControl(req, res, next),
+);
+
+router.delete(
+  '/:id/action-controls/:controlId',
+  roleGuard(Role.GERENTE, Role.GESTOR),
+  (req, res, next) => controller.removeControl(req, res, next),
 );
 
 router.get('/:id', (req, res, next) => controller.getById(req, res, next));

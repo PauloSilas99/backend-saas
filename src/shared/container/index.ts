@@ -18,6 +18,9 @@ import { ColumnsRepository } from '@modules/columns/columns.repository';
 import { ColumnsService } from '@modules/columns/columns.service';
 import { RisksRepository } from '@modules/risks/risks.repository';
 import { RisksService } from '@modules/risks/risks.service';
+import { SheetsService } from '@modules/action-plan-sheets/sheets.service';
+import { CalendarRepository } from '@modules/calendar/calendar.repository';
+import { CalendarService } from '@modules/calendar/calendar.service';
 import { AuditService } from '@shared/audit/audit.service';
 import { TenantPolicyService } from '@shared/policies/tenant-policy.service';
 import { createBillingProvider } from '@modules/billing/providers';
@@ -44,5 +47,8 @@ export function registerDependencies(): void {
   container.registerSingleton(ColumnsService);
   container.registerSingleton(RisksRepository);
   container.registerSingleton(RisksService);
+  container.registerSingleton(SheetsService);
+  container.registerSingleton(CalendarRepository);
+  container.registerSingleton(CalendarService);
   container.registerInstance('BillingProvider', createBillingProvider());
 }

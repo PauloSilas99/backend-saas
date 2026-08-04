@@ -11,6 +11,7 @@ enum Role {
   GERENTE
   GESTOR
   OPERACIONAL
+  LEITOR
 }
 
 enum SubscriptionStatus {
@@ -98,6 +99,27 @@ enum RiskLevel {
   CRITICAL
 }
 
+enum ControlStatus {
+  PENDING
+  IN_PROGRESS
+  DONE
+  CANCELED
+}
+
+enum CalendarActivityStatus {
+  PENDING
+  IN_PROGRESS
+  DONE
+  CANCELED
+}
+
+enum CalendarOverrideType {
+  BLOCKED
+  NOTE
+  HOLIDAY
+  CUSTOM
+}
+
 model User {
   id           String   @id @default(uuid())
   email        String   @unique
@@ -118,6 +140,11 @@ model User {
   columnHistories  ActionColumnHistory[] @relation("ColumnHistoryActor")
   ownedRisks       Risk[]             @relation("RiskOwner")
   deletedColumns   ActionColumn[]     @relation("ColumnDeletedBy")
+  actionControls   ActionControl[]    @relation("ControlResponsible")
+  calendarActivitiesCreated CalendarActivity[] @relation("CalendarActivityCreator")
+  calendarActivitiesAssigned CalendarActivity[] @relation("CalendarActivityAssignee")
+  calendarOverridesCreated CalendarOverride[] @relation("CalendarOverrideCreator")
+  calendarActionOverlays CalendarActionOverlay[] @relation("CalendarActionOverlayOwner")
 
   @@map("users")
 }
@@ -140,6 +167,9 @@ model Tenant {
   auditLogs    AuditLog[]
   columns      ActionColumn[]
   risks        Risk[]
+  calendarActivities CalendarActivity[]
+  calendarOverrides  CalendarOverride[]
+  calendarActionOverlays CalendarActionOverlay[]
 
   @@map("tenants")
 }
@@ -295,6 +325,7 @@ model ActionPlanRow {
   histories   ActionHistory[]
   fieldValues ActionFieldValue[]
   risks       Risk[]
+  calendarOverlays CalendarActionOverlay[]
 
   @@unique([actionPlanId, externalKey])
   @@index([status])
@@ -395,13 +426,34 @@ model Risk {
   createdAt       DateTime   @default(now()) @map("created_at")
   updatedAt       DateTime   @updatedAt @map("updated_at")
 
-  tenant    Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  actionRow ActionPlanRow? @relation(fields: [actionRowId], references: [id])
-  owner     User?          @relation("RiskOwner", fields: [ownerId], references: [id])
+  tenant    Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  actionRow ActionPlanRow?  @relation(fields: [actionRowId], references: [id])
+  owner     User?           @relation("RiskOwner", fields: [ownerId], references: [id])
+  controls  ActionControl[]
 
   @@index([tenantId, status])
   @@index([tenantId, dueDate])
   @@map("risks")
+}
+
+model ActionControl {
+  id              String        @id @default(uuid())
+  riskId          String        @map("risk_id")
+  title           String
+  description     String?
+  status          ControlStatus @default(PENDING)
+  responsibleId   String?       @map("responsible_id")
+  dueDate         DateTime?     @map("due_date")
+  completedAt     DateTime?     @map("completed_at")
+  evidence        String?
+  createdAt       DateTime      @default(now()) @map("created_at")
+  updatedAt       DateTime      @updatedAt @map("updated_at")
+
+  risk          Risk  @relation(fields: [riskId], references: [id], onDelete: Cascade)
+  responsible   User? @relation("ControlResponsible", fields: [responsibleId], references: [id])
+
+  @@index([riskId, status])
+  @@map("action_controls")
 }
 
 model Import {
@@ -453,6 +505,82 @@ model ImportRow {
   @@unique([importId, lineNumber])
   @@index([importId, status])
   @@map("import_rows")
+}
+
+/// Agenda / pendências independentes do fluxo de action-plans / planilha.
+model CalendarActivity {
+  id           String                 @id @default(uuid())
+  tenantId     String                 @map("tenant_id")
+  createdById  String                 @map("created_by_id")
+  assigneeId   String?                @map("assignee_id")
+  title        String
+  description  String?
+  startsAt     DateTime               @map("starts_at")
+  endsAt       DateTime?              @map("ends_at")
+  allDay       Boolean                @default(false) @map("all_day")
+  status       CalendarActivityStatus @default(PENDING)
+  location     String?
+  color        String?
+  metadata     Json?
+  deletedAt    DateTime?              @map("deleted_at")
+  createdAt    DateTime               @default(now()) @map("created_at")
+  updatedAt    DateTime               @updatedAt @map("updated_at")
+
+  tenant    Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  createdBy User   @relation("CalendarActivityCreator", fields: [createdById], references: [id])
+  assignee  User?  @relation("CalendarActivityAssignee", fields: [assigneeId], references: [id])
+
+  @@index([tenantId, startsAt])
+  @@index([tenantId, status])
+  @@index([assigneeId, startsAt])
+  @@map("calendar_activities")
+}
+
+/// Sobrescritas de dia (bloqueio, feriado, nota) — independentes das ações.
+model CalendarOverride {
+  id          String               @id @default(uuid())
+  tenantId    String               @map("tenant_id")
+  createdById String               @map("created_by_id")
+  date        DateTime             @db.Date
+  type        CalendarOverrideType @default(NOTE)
+  title       String?
+  note        String?
+  metadata    Json?
+  createdAt   DateTime             @default(now()) @map("created_at")
+  updatedAt   DateTime             @updatedAt @map("updated_at")
+
+  tenant    Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  createdBy User   @relation("CalendarOverrideCreator", fields: [createdById], references: [id])
+
+  @@unique([tenantId, date])
+  @@index([tenantId, date])
+  @@map("calendar_overrides")
+}
+
+/// Overlay pessoal sobre uma ação da base (planilha).
+/// NÃO altera ActionPlanRow.dueDate — só a visão do usuário no calendário.
+model CalendarActionOverlay {
+  id              String    @id @default(uuid())
+  tenantId        String    @map("tenant_id")
+  userId          String    @map("user_id")
+  actionRowId     String    @map("action_row_id")
+  displayStartsAt DateTime? @map("display_starts_at")
+  displayEndsAt   DateTime? @map("display_ends_at")
+  hidden          Boolean   @default(false)
+  note            String?
+  color           String?
+  metadata        Json?
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+
+  tenant    Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user      User          @relation("CalendarActionOverlayOwner", fields: [userId], references: [id], onDelete: Cascade)
+  actionRow ActionPlanRow @relation(fields: [actionRowId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, actionRowId])
+  @@index([tenantId, userId])
+  @@index([actionRowId])
+  @@map("calendar_action_overlays")
 }
 
 model AuditLog {

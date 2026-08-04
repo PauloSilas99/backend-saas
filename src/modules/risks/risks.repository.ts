@@ -44,6 +44,10 @@ export class RisksRepository {
       include: {
         owner: { select: { id: true, name: true, email: true } },
         actionRow: { select: { id: true, title: true, status: true } },
+        controls: {
+          include: { responsible: { select: { id: true, name: true, email: true } } },
+          orderBy: { createdAt: 'asc' },
+        },
       },
     });
   }
@@ -60,6 +64,54 @@ export class RisksRepository {
     return this.prisma.risk.update({
       where: { id },
       data: { deletedAt: new Date() },
+    });
+  }
+
+  listControls(riskId: string) {
+    return this.prisma.actionControl.findMany({
+      where: { riskId },
+      include: { responsible: { select: { id: true, name: true, email: true } } },
+      orderBy: { createdAt: 'asc' },
+    });
+  }
+
+  findControl(id: string, riskId: string) {
+    return this.prisma.actionControl.findFirst({ where: { id, riskId } });
+  }
+
+  createControl(data: {
+    riskId: string;
+    title: string;
+    description?: string;
+    status?: import('@prisma/client').ControlStatus;
+    responsibleId?: string;
+    dueDate?: Date;
+    evidence?: string;
+  }) {
+    return this.prisma.actionControl.create({ data });
+  }
+
+  updateControl(id: string, data: Prisma.ActionControlUpdateInput) {
+    return this.prisma.actionControl.update({ where: { id }, data });
+  }
+
+  deleteControl(id: string) {
+    return this.prisma.actionControl.delete({ where: { id } });
+  }
+
+  stats(tenantId: string) {
+    return this.prisma.risk.groupBy({
+      by: ['status'],
+      where: { tenantId, deletedAt: null },
+      _count: { _all: true },
+    });
+  }
+
+  matrix(tenantId: string) {
+    return this.prisma.risk.groupBy({
+      by: ['probability', 'impact'],
+      where: { tenantId, deletedAt: null },
+      _count: { _all: true },
     });
   }
 }

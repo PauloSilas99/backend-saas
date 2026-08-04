@@ -131,6 +131,11 @@ export class ActionPlansService {
       externalKey: input.externalKey,
     });
 
+    const values = { ...(input.customFields ?? {}), ...(input.values ?? {}) };
+    if (Object.keys(values).length > 0) {
+      await this.actionPlansRepository.upsertFieldValues(row.id, actor.tenantId, values);
+    }
+
     await this.actionPlansRepository.addHistory({
       actionRowId: row.id,
       actorId: actor.id,
@@ -138,7 +143,7 @@ export class ActionPlansService {
       comment: 'Ação criada',
     });
 
-    return row;
+    return this.actionPlansRepository.findRow(row.id, actor.tenantId);
   }
 
   async updateRow(actor: AuthUser, rowId: string, input: UpdateActionRowInput) {
@@ -188,6 +193,11 @@ export class ActionPlansService {
         : undefined,
     });
 
+    const values = { ...(input.customFields ?? {}), ...(input.values ?? {}) };
+    if (Object.keys(values).length > 0) {
+      await this.actionPlansRepository.upsertFieldValues(rowId, actor.tenantId, values);
+    }
+
     if (input.status && input.status !== row.status) {
       await this.actionPlansRepository.addHistory({
         actionRowId: rowId,
@@ -198,7 +208,7 @@ export class ActionPlansService {
       });
     }
 
-    return updated;
+    return this.actionPlansRepository.findRow(rowId, actor.tenantId);
   }
 
   async requestCompletion(actor: AuthUser, rowId: string, input: TransitionActionInput) {
@@ -269,6 +279,45 @@ export class ActionPlansService {
       fromStatus: row.status,
       toStatus: ActionStatus.REJECTED,
       comment: input.comment,
+    });
+
+    return updated;
+  }
+
+  async resolve(
+    actor: AuthUser,
+    rowId: string,
+    input: import('./action-plans.schemas').ResolveActionInput,
+  ) {
+    this.assertNotPlatformAdminContent(actor);
+    const row = await this.actionPlansRepository.findRow(rowId, actor.tenantId);
+    if (!row) throw new NotFoundError('Ação não encontrada');
+
+    if (isOperacional(actor) && row.responsibleId !== actor.id) {
+      throw new ForbiddenError();
+    }
+    if (!isOperacional(actor) && !canEditAnyAction(actor) && !canApproveActions(actor, false)) {
+      throw new ForbiddenError();
+    }
+
+    const completedAt = input.completedAt ? new Date(input.completedAt) : new Date();
+    const updated = await this.actionPlansRepository.updateRow(rowId, {
+      status: ActionStatus.COMPLETED,
+      completedAt,
+      metadata: {
+        ...((row.metadata as object) ?? {}),
+        evidence: input.evidence,
+        resolvedAt: completedAt.toISOString(),
+      },
+    });
+
+    await this.actionPlansRepository.addHistory({
+      actionRowId: rowId,
+      actorId: actor.id,
+      fromStatus: row.status,
+      toStatus: ActionStatus.COMPLETED,
+      comment: input.comment ?? 'Ação resolvida',
+      metadata: { evidence: input.evidence },
     });
 
     return updated;

@@ -103,6 +103,16 @@ export class ActionPlansController {
     }
   }
 
+  async resolve(req: Request, res: Response, next: NextFunction) {
+    try {
+      const service = container.resolve(ActionPlansService);
+      const data = await service.resolve(req.user!, req.params.rowId, req.body);
+      res.json({ success: true, data });
+    } catch (error) {
+      next(error);
+    }
+  }
+
   async duplicate(req: Request, res: Response, next: NextFunction) {
     try {
       const service = container.resolve(ActionPlansService);

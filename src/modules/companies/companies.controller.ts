@@ -43,10 +43,24 @@ export class CompaniesController {
     }
   }
 
+  async remove(req: Request, res: Response, next: NextFunction) {
+    try {
+      const service = container.resolve(CompaniesService);
+      const data = await service.remove(req.user!, req.params.id);
+      res.json({ success: true, data });
+    } catch (error) {
+      next(error);
+    }
+  }
+
   async listUnits(req: Request, res: Response, next: NextFunction) {
     try {
       const service = container.resolve(CompaniesService);
-      const data = await service.listUnits(req.user!, req.query.tenantId as string | undefined);
+      const empresaId =
+        (req.params.empresaId as string | undefined) ||
+        (req.query.empresaId as string | undefined) ||
+        (req.query.tenantId as string | undefined);
+      const data = await service.listUnits(req.user!, empresaId);
       res.json({ success: true, data });
     } catch (error) {
       next(error);
@@ -56,8 +70,29 @@ export class CompaniesController {
   async createUnit(req: Request, res: Response, next: NextFunction) {
     try {
       const service = container.resolve(CompaniesService);
-      const data = await service.createUnit(req.user!, req.body);
+      const empresaId = req.params.empresaId as string | undefined;
+      const data = await service.createUnit(req.user!, req.body, empresaId);
       res.status(201).json({ success: true, data });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async updateUnit(req: Request, res: Response, next: NextFunction) {
+    try {
+      const service = container.resolve(CompaniesService);
+      const data = await service.updateUnit(req.user!, req.params.id, req.body);
+      res.json({ success: true, data });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async removeUnit(req: Request, res: Response, next: NextFunction) {
+    try {
+      const service = container.resolve(CompaniesService);
+      const data = await service.removeUnit(req.user!, req.params.id);
+      res.json({ success: true, data });
     } catch (error) {
       next(error);
     }

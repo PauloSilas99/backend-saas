@@ -11,6 +11,7 @@ import {
   createActionRowSchema,
   listActionsQuerySchema,
   rejectActionSchema,
+  resolveActionSchema,
   transitionActionSchema,
   updateActionRowSchema,
 } from './action-plans.schemas';
@@ -82,6 +83,12 @@ router.post(
   roleGuard(Role.GERENTE, Role.GESTOR),
   validate({ body: rejectActionSchema }),
   (req, res, next) => controller.reject(req, res, next),
+);
+
+router.post(
+  '/rows/:rowId/resolve',
+  validate({ body: resolveActionSchema }),
+  (req, res, next) => controller.resolve(req, res, next),
 );
 
 router.post(
