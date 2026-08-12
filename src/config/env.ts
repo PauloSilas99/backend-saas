@@ -26,7 +26,7 @@ const envSchema = z.object({
   STRIPE_WEBHOOK_SECRET: z.string().optional().default(''),
   ASAAS_API_KEY: z.string().optional().default(''),
   ASAAS_WEBHOOK_TOKEN: z.string().optional().default(''),
-  UPLOAD_MAX_SIZE_MB: z.coerce.number().default(10),
+  UPLOAD_MAX_SIZE_MB: z.coerce.number().default(50),
   UPLOAD_DIR: z.string().default('uploads'),
   REDIS_URL: z.string().default('redis://localhost:6379'),
 });

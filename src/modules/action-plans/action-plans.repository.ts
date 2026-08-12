@@ -70,6 +70,72 @@ export class ActionPlansRepository {
     return this.prisma.actionPlanRow.create({ data });
   }
 
+  /**
+   * Insere várias linhas de uma vez (importação em massa).
+   * Retorna os IDs na mesma ordem do input (via createMany + findMany por janela temporal
+   * não é confiável; por isso criamos em lotes menores com create e coletamos ids,
+   * ou usamos createMany + retorno explícito quando disponível).
+   *
+   * Prisma createMany não retorna IDs no Postgres — usamos create em paralelo limitado
+   * via Promise.all em chunks para equilibrar throughput e obter IDs para field values.
+   */
+  async createRowsBatch(
+    rows: Array<{
+      actionPlanId: string;
+      title: string;
+      description?: string;
+      unitId?: string;
+      responsibleId?: string;
+      status?: ActionStatus;
+      priority?: ActionPriority;
+      dueDate?: Date;
+      externalKey?: string;
+    }>,
+    chunkSize = 50,
+  ) {
+    const created: Array<{ id: string }> = [];
+    for (let i = 0; i < rows.length; i += chunkSize) {
+      const slice = rows.slice(i, i + chunkSize);
+      const batch = await Promise.all(
+        slice.map((data) => this.prisma.actionPlanRow.create({ data, select: { id: true } })),
+      );
+      created.push(...batch);
+    }
+    return created;
+  }
+
+  async createFieldValuesBatch(
+    values: Array<{
+      actionRowId: string;
+      columnId: string;
+      value: Prisma.InputJsonValue;
+    }>,
+    chunkSize = 500,
+  ) {
+    for (let i = 0; i < values.length; i += chunkSize) {
+      const slice = values.slice(i, i + chunkSize);
+      await this.prisma.actionFieldValue.createMany({
+        data: slice,
+        skipDuplicates: true,
+      });
+    }
+  }
+
+  async createHistoryBatch(
+    entries: Array<{
+      actionRowId: string;
+      actorId: string;
+      toStatus: ActionStatus;
+      comment: string;
+    }>,
+    chunkSize = 500,
+  ) {
+    for (let i = 0; i < entries.length; i += chunkSize) {
+      const slice = entries.slice(i, i + chunkSize);
+      await this.prisma.actionHistory.createMany({ data: slice });
+    }
+  }
+
   findRow(id: string, tenantId: string, includeDeleted = false) {
     return this.prisma.actionPlanRow.findFirst({
       where: {
@@ -141,6 +207,97 @@ export class ActionPlansRepository {
       where: { tenantId },
       orderBy: { createdAt: 'asc' },
     });
+  }
+
+  findPlanMeta(id: string, tenantId: string) {
+    return this.prisma.actionPlan.findFirst({
+      where: { id, tenantId },
+    });
+  }
+
+  countPlanRows(actionPlanId: string) {
+    return this.prisma.actionPlanRow.count({
+      where: { actionPlanId, deletedAt: null },
+    });
+  }
+
+  async listPlanRows(
+    actionPlanId: string,
+    tenantId: string,
+    query: { page: number; pageSize: number; search?: string },
+  ) {
+    const where: Prisma.ActionPlanRowWhereInput = {
+      actionPlanId,
+      deletedAt: null,
+      actionPlan: { tenantId },
+      ...(query.search
+        ? {
+            OR: [
+              { title: { contains: query.search, mode: 'insensitive' } },
+              { description: { contains: query.search, mode: 'insensitive' } },
+              { responsibleName: { contains: query.search, mode: 'insensitive' } },
+              { unitName: { contains: query.search, mode: 'insensitive' } },
+            ],
+          }
+        : {}),
+    };
+
+    const skip = (query.page - 1) * query.pageSize;
+    const [items, total] = await this.prisma.$transaction([
+      this.prisma.actionPlanRow.findMany({
+        where,
+        include: {
+          responsible: { select: { id: true, name: true, email: true } },
+          unit: true,
+          fieldValues: { include: { column: true } },
+        },
+        orderBy: [{ createdAt: 'desc' }],
+        skip,
+        take: query.pageSize,
+      }),
+      this.prisma.actionPlanRow.count({ where }),
+    ]);
+
+    return { items, total };
+  }
+
+  /** Carrega linhas em páginas para agregações server-side (analytics). */
+  async iteratePlanRowsForAnalytics(actionPlanId: string, tenantId: string, pageSize = 1000) {
+    const pages: Array<{
+      id: string;
+      title: string;
+      description: string | null;
+      status: ActionStatus;
+      priority: ActionPriority;
+      dueDate: Date | null;
+      completedAt: Date | null;
+      fieldValues: Array<{ value: Prisma.JsonValue; column: { name: string } }>;
+    }> = [];
+
+    let skip = 0;
+    for (;;) {
+      const batch = await this.prisma.actionPlanRow.findMany({
+        where: { actionPlanId, deletedAt: null, actionPlan: { tenantId } },
+        select: {
+          id: true,
+          title: true,
+          description: true,
+          status: true,
+          priority: true,
+          dueDate: true,
+          completedAt: true,
+          fieldValues: { select: { value: true, column: { select: { name: true } } } },
+        },
+        orderBy: { createdAt: 'asc' },
+        skip,
+        take: pageSize,
+      });
+      if (batch.length === 0) break;
+      pages.push(...batch);
+      skip += pageSize;
+      if (batch.length < pageSize) break;
+    }
+    return pages;
   }
 
   updatePlan(

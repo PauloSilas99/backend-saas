@@ -1,5 +1,5 @@
 /** Máximo de linhas de dados (excluindo cabeçalho) aceitas por importação. */
-export const MAX_IMPORT_ROWS = 50_000;
+export const MAX_IMPORT_ROWS = 100_000;
 
 /** Tamanho máximo descomprimido permitido para arquivos .xlsx (proteção zip bomb). */
 export const MAX_XLSX_UNCOMPRESSED_BYTES = 200 * 1024 * 1024;

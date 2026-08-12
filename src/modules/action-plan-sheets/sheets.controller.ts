@@ -156,4 +156,55 @@ export class SheetsController {
       next(error);
     }
   }
+
+  async parseUpload(req: Request, res: Response, next: NextFunction) {
+    try {
+      if (!req.file) {
+        res.status(400).json({
+          success: false,
+          error: { code: 'VALIDATION_ERROR', message: 'Envie o arquivo no campo "file".' },
+        });
+        return;
+      }
+      const service = container.resolve(SheetsService);
+      const data = await service.parseUpload(req.user!, req.file);
+      res.status(201).json({ success: true, data });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async importFromParse(req: Request, res: Response, next: NextFunction) {
+    try {
+      const service = container.resolve(SheetsService);
+      const data = await service.importFromParse(req.user!, req.body);
+      res.status(201).json({ success: true, data });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async listRows(req: Request, res: Response, next: NextFunction) {
+    try {
+      const service = container.resolve(SheetsService);
+      const data = await service.listRows(req.user!, req.params.id, {
+        page: Number(req.query.page ?? 1),
+        pageSize: Number(req.query.pageSize ?? 50),
+        search: typeof req.query.search === 'string' ? req.query.search : undefined,
+      });
+      res.json({ success: true, data });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async getAnalytics(req: Request, res: Response, next: NextFunction) {
+    try {
+      const service = container.resolve(SheetsService);
+      const data = await service.getAnalytics(req.user!, req.params.id);
+      res.json({ success: true, data });
+    } catch (error) {
+      next(error);
+    }
+  }
 }

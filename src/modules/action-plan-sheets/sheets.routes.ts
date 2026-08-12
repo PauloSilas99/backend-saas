@@ -1,5 +1,10 @@
 import { Router } from 'express';
+import { randomUUID } from 'crypto';
+import fs from 'fs';
+import path from 'path';
+import multer from 'multer';
 import { Role } from '@prisma/client';
+import { env } from '@config/env';
 import { authenticate } from '@middlewares/authenticate';
 import { roleGuard } from '@middlewares/roleGuard';
 import { subscriptionGate } from '@middlewares/subscriptionGate';
@@ -9,7 +14,9 @@ import {
   columnsOrderSchema,
   createActionPlanSchema,
   createActionRowSchema,
+  importFromParseSchema,
   importSheetJsonSchema,
+  listSheetRowsQuerySchema,
   resolveActionSchema,
   updateActionRowSchema,
 } from '@modules/action-plans/action-plans.schemas';
@@ -19,10 +26,38 @@ import { SheetsController } from './sheets.controller';
 const controller = new SheetsController();
 const router = Router();
 
+const parseUpload = multer({
+  storage: multer.diskStorage({
+    destination: (_req, _file, cb) => {
+      const dir = path.resolve(process.cwd(), env.UPLOAD_DIR, 'tmp');
+      fs.mkdirSync(dir, { recursive: true });
+      cb(null, dir);
+    },
+    filename: (_req, file, cb) => {
+      cb(null, `${randomUUID()}${path.extname(file.originalname)}`);
+    },
+  }),
+  limits: { fileSize: env.UPLOAD_MAX_SIZE_MB * 1024 * 1024 },
+});
+
 router.use(authenticate, subscriptionGate);
 
 router.get('/', (req, res, next) => controller.list(req, res, next));
 router.get('/primary', (req, res, next) => controller.getPrimary(req, res, next));
+
+router.post(
+  '/parse-upload',
+  roleGuard(Role.GERENTE, Role.GESTOR),
+  parseUpload.single('file'),
+  (req, res, next) => controller.parseUpload(req, res, next),
+);
+
+router.post(
+  '/import-from-parse',
+  roleGuard(Role.GERENTE, Role.GESTOR),
+  validate({ body: importFromParseSchema }),
+  (req, res, next) => controller.importFromParse(req, res, next),
+);
 
 router.post(
   '/import',
@@ -39,6 +74,14 @@ router.post(
 );
 
 router.get('/:id', (req, res, next) => controller.getById(req, res, next));
+
+router.get(
+  '/:id/rows',
+  validate({ query: listSheetRowsQuerySchema }),
+  (req, res, next) => controller.listRows(req, res, next),
+);
+
+router.get('/:id/analytics', (req, res, next) => controller.getAnalytics(req, res, next));
 
 router.put(
   '/:id',

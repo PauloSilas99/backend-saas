@@ -96,6 +96,10 @@ export const importSheetJsonSchema = z.object({
   options: z
     .object({
       replaceExisting: z.boolean().optional(),
+      /** Continua importando no plano já criado (envio em chunks). */
+      planId: z.string().uuid().optional(),
+      /** Não recria/atualiza colunas (chunks seguintes). */
+      skipColumnSync: z.boolean().optional(),
     })
     .optional(),
 });
@@ -144,3 +148,32 @@ export type ResolveActionInput = z.infer<typeof resolveActionSchema>;
 export type BulkSheetInput = z.infer<typeof bulkSheetSchema>;
 export type ImportSheetJsonInput = z.infer<typeof importSheetJsonSchema>;
 export type ColumnsOrderInput = z.infer<typeof columnsOrderSchema>;
+
+export const importFromParseSchema = z.object({
+  parseId: z.string().uuid(),
+  empresaId: z.string().uuid().optional(),
+  title: z.string().min(2).max(200),
+  columns: z
+    .array(
+      z.object({
+        sourceHeader: z.string().min(1).max(200),
+        name: z.string().min(1).max(60),
+        label: z.string().min(1).max(120),
+        fieldType: z.nativeEnum(ColumnFieldType).optional(),
+        required: z.boolean().optional(),
+        options: z.array(z.string()).optional(),
+        sortOrder: z.number().int().optional(),
+      }),
+    )
+    .min(1),
+});
+
+export type ImportFromParseInput = z.infer<typeof importFromParseSchema>;
+
+export const listSheetRowsQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  pageSize: z.coerce.number().int().min(1).max(200).default(50),
+  search: z.string().optional(),
+});
+
+export type ListSheetRowsQuery = z.infer<typeof listSheetRowsQuerySchema>;

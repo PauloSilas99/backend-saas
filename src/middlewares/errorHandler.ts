@@ -33,6 +33,24 @@ export function errorHandler(
     return;
   }
 
+  const bodyTooLarge =
+    (err as { type?: string; status?: number; statusCode?: number }).type ===
+      'entity.too.large' ||
+    (err as { status?: number }).status === 413 ||
+    (err as { statusCode?: number }).statusCode === 413;
+
+  if (bodyTooLarge) {
+    res.status(413).json({
+      success: false,
+      error: {
+        code: 'PAYLOAD_TOO_LARGE',
+        message:
+          'Arquivo ou payload muito grande. Divida a planilha em partes menores ou tente novamente.',
+      },
+    });
+    return;
+  }
+
   logger.error({ err }, 'Unhandled error');
   res.status(500).json({
     success: false,

@@ -4,9 +4,9 @@
   "description": "Backend SaaS - Node.js + Express + TypeScript",
   "main": "dist/server.js",
   "scripts": {
-    "dev": "tsx watch src/server.ts",
+    "dev": "NODE_OPTIONS='--max-old-space-size=4096' tsx watch src/server.ts",
     "build": "tsc && tsc-alias",
-    "start": "node dist/server.js",
+    "start": "NODE_OPTIONS='--max-old-space-size=4096' node dist/server.js",
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "eslint src --ext .ts || true",
