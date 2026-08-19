@@ -3,6 +3,8 @@ WORKDIR /app
 COPY package*.json ./
 COPY prisma ./prisma/
 COPY prisma.config.ts ./
+# prisma generate só precisa de URL válida; não conecta ao banco no build.
+ENV DATABASE_URL="postgresql://build:build@127.0.0.1:5432/build?schema=public"
 RUN npm ci
 COPY . .
 RUN npx prisma generate && npm run build
