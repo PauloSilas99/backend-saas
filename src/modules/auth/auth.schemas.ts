@@ -21,8 +21,14 @@ export const loginSchema = z.object({
 
 export const refreshSchema = z.object({
   refreshToken: z.string().min(20),
+  tenantId: z.string().uuid().optional(),
+});
+
+export const switchTenantSchema = z.object({
+  tenantId: z.string().uuid(),
 });
 
 export type RegisterInput = z.infer<typeof registerSchema>;
 export type LoginInput = z.infer<typeof loginSchema>;
 export type RefreshInput = z.infer<typeof refreshSchema>;
+export type SwitchTenantInput = z.infer<typeof switchTenantSchema>;

@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { ColumnFieldType } from '@prisma/client';
+import { ColumnFieldType, ColumnSemanticRole } from '@prisma/client';
 
 export const createColumnSchema = z.object({
   name: z
@@ -9,9 +9,11 @@ export const createColumnSchema = z.object({
     .regex(/^[a-z][a-z0-9_]*$/),
   label: z.string().min(2).max(120),
   fieldType: z.nativeEnum(ColumnFieldType),
+  semanticRole: z.nativeEnum(ColumnSemanticRole).optional(),
   required: z.boolean().optional().default(false),
   options: z.array(z.string()).optional(),
   sortOrder: z.number().int().optional().default(0),
+  actionPlanId: z.string().uuid().optional(),
 });
 
 export const updateColumnSchema = z.object({
@@ -20,6 +22,7 @@ export const updateColumnSchema = z.object({
   options: z.array(z.string()).optional(),
   sortOrder: z.number().int().optional(),
   isActive: z.boolean().optional(),
+  semanticRole: z.nativeEnum(ColumnSemanticRole).optional(),
 });
 
 export const deleteColumnSchema = z.object({

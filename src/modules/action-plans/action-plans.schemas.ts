@@ -10,6 +10,7 @@ export const createActionPlanSchema = z.object({
 });
 
 export const createActionRowSchema = z.object({
+  id: z.string().uuid().optional(),
   title: z.string().min(2).max(200),
   description: z.string().optional(),
   unitId: z.string().uuid().optional(),
@@ -153,10 +154,12 @@ export const importFromParseSchema = z.object({
   parseId: z.string().uuid(),
   empresaId: z.string().uuid().optional(),
   title: z.string().min(2).max(200),
+  headerRowIndex: z.number().int().min(1).max(50).optional(),
   columns: z
     .array(
       z.object({
-        sourceHeader: z.string().min(1).max(200),
+        sourceHeader: z.string().max(200).default(''),
+        sourceColIndex: z.number().int().min(-1).max(500),
         name: z.string().min(1).max(60),
         label: z.string().min(1).max(120),
         fieldType: z.nativeEnum(ColumnFieldType).optional(),
@@ -174,6 +177,10 @@ export const listSheetRowsQuerySchema = z.object({
   page: z.coerce.number().int().min(1).default(1),
   pageSize: z.coerce.number().int().min(1).max(200).default(50),
   search: z.string().optional(),
+});
+
+export const parseDistinctsQuerySchema = z.object({
+  header: z.string().min(1).max(200),
 });
 
 export type ListSheetRowsQuery = z.infer<typeof listSheetRowsQuerySchema>;

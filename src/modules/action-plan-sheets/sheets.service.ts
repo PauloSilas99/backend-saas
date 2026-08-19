@@ -4,18 +4,22 @@ import {
   ActionStatus,
   ColumnFieldType,
   ColumnHistoryAction,
+  ColumnSemanticRole,
 } from '@prisma/client';
-import { ForbiddenError, NotFoundError } from '@shared/errors/AppError';
+import { ForbiddenError, NotFoundError, ValidationError } from '@shared/errors/AppError';
 import { AuthUser } from '@/types/auth';
 import {
   canCreateActions,
   canImportSpreadsheet,
   canManageColumns,
+  isOperacional,
   isPlatformAdmin,
 } from '@shared/helpers/rbac';
+import { isBlankPlanRow } from '@shared/helpers/plan-row-blank';
 import { ActionPlansRepository } from '@modules/action-plans/action-plans.repository';
 import { ActionPlansService } from '@modules/action-plans/action-plans.service';
 import { ColumnsRepository } from '@modules/columns/columns.repository';
+import { inferSemanticRole, pickUniqueSemanticRoles } from '@modules/columns/column-semantics';
 import {
   BulkSheetInput,
   ColumnsOrderInput,
@@ -23,17 +27,30 @@ import {
   ImportSheetJsonInput,
 } from '@modules/action-plans/action-plans.schemas';
 import { CreateColumnInput } from '@modules/columns/columns.schemas';
-import { parseSpreadsheetFile } from '@modules/imports/imports.parser';
+import { normalizeDateValue } from '@modules/imports/sheet-cells';
 import {
   deleteSheetParse,
   iterateSheetParseRows,
   loadSheetParseMeta,
+  PARSE_SAMPLE_ROWS,
+  readSheetParseDistincts,
   readSheetParseSample,
-  saveSheetParse,
+  resolveSheetParseSourcePath,
+  saveSheetParseFromFile,
+  streamSheetParseSource,
 } from './sheet-parse.store';
+import {
+  enqueueSheetImportJob,
+  enqueueSheetParseJob,
+  getSheetJob,
+  toParseJobResult,
+  type SheetJob,
+  type SheetImportJobResult,
+  type SheetJobProgress,
+} from './sheet-import.jobs';
 
-const SAMPLE_ROWS = 50;
 const IMPORT_FROM_PARSE_BATCH = 500;
+const IMPORT_ISSUE_CAP = 100;
 
 const STATUS_MAP: Record<string, ActionStatus> = {
   pending: ActionStatus.PENDING,
@@ -71,8 +88,8 @@ export class SheetsService {
 
   async getById(actor: AuthUser, id: string) {
     const plan = await this.plansService.getById(actor, id);
-    const columns = await this.columnsRepo.listActive(actor.tenantId);
-    const rowCount = await this.plansRepo.countPlanRows(id);
+    const columns = await this.columnsRepo.listActive(id);
+    const rowCount = await this.plansRepo.countFilledPlanRows(id, actor.tenantId);
     return { ...plan, columns, rowCount, rows: plan.rows ?? [] };
   }
 
@@ -83,8 +100,8 @@ export class SheetsService {
     if (isPlatformAdmin(actor)) throw new ForbiddenError();
     const plan = await this.plansRepo.findPlanMeta(id, actor.tenantId);
     if (!plan) throw new NotFoundError('Planilha não encontrada');
-    const columns = await this.columnsRepo.listActive(actor.tenantId);
-    const rowCount = await this.plansRepo.countPlanRows(id);
+    const columns = await this.columnsRepo.listActive(id);
+    const rowCount = await this.plansRepo.countFilledPlanRows(id, actor.tenantId);
     return {
       ...plan,
       columns,
@@ -93,21 +110,30 @@ export class SheetsService {
     };
   }
 
-  async getOrCreateForEmpresa(actor: AuthUser, empresaId?: string) {
+  /** Somente leitura — não cria plano vazio (importação/criação explícita). */
+  async getPrimaryForEmpresa(actor: AuthUser, empresaId?: string) {
     if (isPlatformAdmin(actor)) throw new ForbiddenError();
     const tenantId = empresaId ?? actor.tenantId;
     if (tenantId !== actor.tenantId) throw new ForbiddenError();
 
-    let plan = await this.plansRepo.findPrimaryPlan(tenantId);
+    const plan = await this.plansRepo.findPrimaryPlan(tenantId);
     if (!plan) {
-      if (!canCreateActions(actor)) throw new ForbiddenError();
-      plan = await this.plansRepo.createPlan({
-        tenantId,
-        ownerId: actor.id,
-        title: 'Planilha principal',
-      });
+      throw new NotFoundError('Nenhum plano de ação encontrado para esta empresa.');
     }
     return this.getSummary(actor, plan.id);
+  }
+
+  async deleteBlankRows(actor: AuthUser, sheetId: string) {
+    await this.assertSheet(actor, sheetId);
+    if (!canImportSpreadsheet(actor)) throw new ForbiddenError();
+
+    const scopeResponsibleId = isOperacional(actor) ? actor.id : undefined;
+    const deleted = await this.plansRepo.softDeleteBlankRows(
+      sheetId,
+      actor.tenantId,
+      scopeResponsibleId,
+    );
+    return { deleted };
   }
 
   async listRows(
@@ -116,10 +142,12 @@ export class SheetsService {
     query: { page: number; pageSize: number; search?: string },
   ) {
     await this.assertSheet(actor, sheetId);
+    const scopeResponsibleId = isOperacional(actor) ? actor.id : undefined;
     const { items, total } = await this.plansRepo.listPlanRows(
       sheetId,
       actor.tenantId,
       query,
+      scopeResponsibleId,
     );
     const totalPages = Math.max(1, Math.ceil(total / query.pageSize));
     return {
@@ -136,7 +164,7 @@ export class SheetsService {
   async createColumn(actor: AuthUser, sheetId: string, input: CreateColumnInput) {
     await this.assertSheet(actor, sheetId);
     if (!canManageColumns(actor)) throw new ForbiddenError();
-    const column = await this.columnsRepo.create(actor.tenantId, input);
+    const column = await this.columnsRepo.create(actor.tenantId, sheetId, input);
     await this.columnsRepo.addHistory({
       columnId: column.id,
       actorId: actor.id,
@@ -154,7 +182,7 @@ export class SheetsService {
   ) {
     await this.assertSheet(actor, sheetId);
     if (!canManageColumns(actor)) throw new ForbiddenError();
-    const existing = await this.columnsRepo.findById(columnId, actor.tenantId);
+    const existing = await this.columnsRepo.findById(columnId, actor.tenantId, sheetId);
     if (!existing || existing.deletedAt) throw new NotFoundError('Coluna não encontrada');
     return this.columnsRepo.update(columnId, input);
   }
@@ -171,13 +199,13 @@ export class SheetsService {
     await Promise.all(
       input.order.map((id, index) => this.columnsRepo.update(id, { sortOrder: index })),
     );
-    return this.columnsRepo.listActive(actor.tenantId);
+    return this.columnsRepo.listActive(sheetId);
   }
 
   async resetColumns(actor: AuthUser, sheetId: string) {
     await this.assertSheet(actor, sheetId);
     if (!canManageColumns(actor)) throw new ForbiddenError();
-    const columns = await this.columnsRepo.listActive(actor.tenantId);
+    const columns = await this.columnsRepo.listActive(sheetId);
     for (const col of columns) {
       await this.columnsRepo.softDelete(col.id, actor.id, 'reset');
     }
@@ -206,21 +234,33 @@ export class SheetsService {
 
     if (input.columns && canManageColumns(actor)) {
       for (const [index, col] of input.columns.entries()) {
-        if (col.id) {
-          await this.columnsRepo.update(col.id, {
+        const name = col.name
+          .toLowerCase()
+          .replace(/[^a-z0-9_]+/g, '_')
+          .replace(/^[^a-z]/, 'c_')
+          .slice(0, 60);
+        const existing = col.id
+          ? await this.columnsRepo.findById(col.id, actor.tenantId, sheetId)
+          : null;
+        if (existing && !existing.deletedAt) {
+          await this.columnsRepo.update(col.id!, {
+            label: col.label,
+            required: col.required,
+            options: col.options,
+            sortOrder: col.sortOrder ?? index,
+          });
+        } else if (existing) {
+          await this.columnsRepo.update(col.id!, {
+            deletedAt: null,
+            isActive: true,
             label: col.label,
             required: col.required,
             options: col.options,
             sortOrder: col.sortOrder ?? index,
           });
         } else {
-          const name = col.name
-            .toLowerCase()
-            .replace(/[^a-z0-9_]+/g, '_')
-            .replace(/^[^a-z]/, 'c_')
-            .slice(0, 60);
           try {
-            await this.columnsRepo.create(actor.tenantId, {
+            await this.columnsRepo.create(actor.tenantId, sheetId, {
               name,
               label: col.label,
               fieldType: col.fieldType ?? ColumnFieldType.TEXT,
@@ -237,29 +277,17 @@ export class SheetsService {
 
     if (input.rows && canCreateActions(actor)) {
       for (const row of input.rows) {
-        if (row.id) {
-          await this.plansService.updateRow(actor, row.id, {
-            title: row.title,
-            description: row.description,
-            status: row.status,
-            priority: row.priority,
-            dueDate: row.dueDate,
-            responsibleId: row.responsibleId,
-            unitId: row.unitId,
-            values: row.values,
-          });
-        } else {
-          await this.plansService.addRow(actor, sheetId, {
-            title: row.title,
-            description: row.description,
-            status: row.status,
-            priority: row.priority,
-            dueDate: row.dueDate,
-            responsibleId: row.responsibleId,
-            unitId: row.unitId,
-            values: row.values,
-          });
-        }
+        await this.plansService.saveSheetRow(actor, sheetId, {
+          id: row.id,
+          title: row.title,
+          description: row.description,
+          status: row.status,
+          priority: row.priority,
+          dueDate: row.dueDate,
+          responsibleId: row.responsibleId,
+          unitId: row.unitId,
+          values: row.values,
+        });
       }
     }
 
@@ -296,18 +324,34 @@ export class SheetsService {
       await this.plansRepo.updatePlan(plan.id, { title: input.title });
     }
 
+    if (input.options?.replaceExisting && !input.options?.skipColumnSync) {
+      await this.plansRepo.replaceWorkbookContent(plan.id, tenantId);
+    }
+
     if (!input.options?.skipColumnSync) {
-      for (const [index, col] of input.columns.entries()) {
+      const withRoles = pickUniqueSemanticRoles(
+        input.columns.map((col, index) => ({
+          ...col,
+          semanticRole: inferSemanticRole({
+            name: col.name,
+            label: col.label,
+            fieldType: col.fieldType,
+          }),
+          sortOrder: col.sortOrder ?? index,
+        })),
+      );
+      for (const [index, col] of withRoles.entries()) {
         const name = col.name
           .toLowerCase()
           .replace(/[^a-z0-9_]+/g, '_')
           .replace(/^[^a-z]/, 'c_')
           .slice(0, 60);
         try {
-          await this.columnsRepo.create(tenantId, {
+          await this.columnsRepo.create(tenantId, plan.id, {
             name,
             label: col.label,
             fieldType: col.fieldType ?? ColumnFieldType.TEXT,
+            semanticRole: col.semanticRole,
             required: col.required ?? false,
             options: col.options,
             sortOrder: col.sortOrder ?? index,
@@ -318,12 +362,15 @@ export class SheetsService {
       }
     }
 
-    const columns = await this.columnsRepo.listActive(tenantId);
+    const columns = await this.columnsRepo.listActive(plan.id);
     const columnByKey = new Map<string, (typeof columns)[number]>();
     for (const col of columns) {
       columnByKey.set(col.id, col);
       columnByKey.set(col.name, col);
     }
+    const dueColumn = columns.find((c) => c.semanticRole === ColumnSemanticRole.DUE_DATE);
+    const assigneeColumn = columns.find((c) => c.semanticRole === ColumnSemanticRole.ASSIGNEE);
+    const members = await this.plansRepo.listTenantMembers(tenantId);
 
     type PreparedRow = {
       line: number;
@@ -333,6 +380,7 @@ export class SheetsService {
       priority: ActionPriority;
       dueDate?: Date;
       responsibleId?: string;
+      responsibleName?: string;
       unitId?: string;
       values: Record<string, unknown>;
     };
@@ -362,16 +410,51 @@ export class SheetsService {
         continue;
       }
 
+      const values = (row.values ?? {}) as Record<string, unknown>;
+      const dueRaw =
+        row.dueDate?.trim() ||
+        (dueColumn ? String(values[dueColumn.name] ?? values[dueColumn.id] ?? '') : '');
+      const parsedDue = dueRaw ? normalizeDateValue(dueRaw) : { value: '' };
+      const dueDate = parsedDue.value ? new Date(parsedDue.value) : undefined;
+
+      const assigneeRaw =
+        (assigneeColumn
+          ? String(values[assigneeColumn.name] ?? values[assigneeColumn.id] ?? '')
+          : '') || '';
+      const matched = matchTenantMember(members, assigneeRaw);
+
+      const stringValues = Object.fromEntries(
+        Object.entries(values).map(([key, value]) => [key, String(value ?? '').trim()]),
+      ) as Record<string, string>;
+
+      if (
+        isBlankPlanRow({
+          title: row.title,
+          description: row.description,
+          responsibleName: assigneeRaw.trim() || matched?.name,
+          unitName: undefined,
+          dueDate: dueDate ?? null,
+          fieldValues: Object.entries(stringValues).map(([name, value]) => ({
+            value,
+            column: { name },
+          })),
+        })
+      ) {
+        skipped += 1;
+        continue;
+      }
+
       prepared.push({
         line,
         title: row.title,
         description: row.description,
         status: status ?? ActionStatus.PENDING,
         priority: priority ?? ActionPriority.MEDIUM,
-        dueDate: row.dueDate ? new Date(row.dueDate) : undefined,
-        responsibleId: row.responsibleId,
+        dueDate: dueDate && !Number.isNaN(dueDate.getTime()) ? dueDate : undefined,
+        responsibleId: row.responsibleId ?? matched?.id,
+        responsibleName: assigneeRaw.trim() || matched?.name,
         unitId: row.unitId,
-        values: row.values ?? {},
+        values,
       });
     }
 
@@ -379,8 +462,9 @@ export class SheetsService {
     for (let offset = 0; offset < prepared.length; offset += BATCH) {
       const slice = prepared.slice(offset, offset + BATCH);
       try {
-        const created = await this.plansRepo.createRowsBatch(
-          slice.map((row) => ({
+        const created = await this.plansRepo.commitImportChunk({
+          tenantId,
+          rows: slice.map((row) => ({
             actionPlanId: plan.id,
             title: row.title,
             description: row.description,
@@ -388,44 +472,13 @@ export class SheetsService {
             priority: row.priority,
             dueDate: row.dueDate,
             responsibleId: row.responsibleId,
+            responsibleName: row.responsibleName,
             unitId: row.unitId,
           })),
-          50,
-        );
-
-        const fieldValues: Array<{
-          actionRowId: string;
-          columnId: string;
-          value: import('@prisma/client').Prisma.InputJsonValue;
-        }> = [];
-
-        for (let i = 0; i < created.length; i += 1) {
-          const rowId = created[i].id;
-          const source = slice[i];
-          for (const [key, raw] of Object.entries(source.values)) {
-            const column = columnByKey.get(key);
-            if (!column || raw == null || raw === '') continue;
-            fieldValues.push({
-              actionRowId: rowId,
-              columnId: column.id,
-              value: raw as import('@prisma/client').Prisma.InputJsonValue,
-            });
-          }
-        }
-
-        if (fieldValues.length > 0) {
-          await this.plansRepo.createFieldValuesBatch(fieldValues);
-        }
-
-        await this.plansRepo.createHistoryBatch(
-          created.map((row, i) => ({
-            actionRowId: row.id,
-            actorId: actor.id,
-            toStatus: slice[i].status,
-            comment: 'Importado da planilha',
-          })),
-        );
-
+          values: slice.map((row) => row.values),
+          columnByKey,
+          actorId: actor.id,
+        });
         imported += created.length;
       } catch (error) {
         // Fallback: tenta linha a linha neste lote para não perder o restante
@@ -464,62 +517,92 @@ export class SheetsService {
   }
 
   /**
-   * Lê a planilha no servidor (ExcelJS stream) e guarda o resultado em disco (JSONL).
-   * O cliente recebe só metadados + amostra — não trava o navegador.
+   * Recebe o arquivo, devolve jobId na hora e lê em background (JSONL incremental).
    */
-  async parseUpload(
+  async enqueueParseUpload(
     actor: AuthUser,
     file: Express.Multer.File,
-  ): Promise<{
-    parseId: string;
-    fileName: string;
-    sheetName: string;
-    headers: string[];
-    totalRows: number;
-    sampleRows: Record<string, string>[];
-    emptyColumns: string[];
-  }> {
+  ): Promise<{ jobId: string }> {
     if (!canImportSpreadsheet(actor)) throw new ForbiddenError();
     if (isPlatformAdmin(actor)) throw new ForbiddenError();
     if (!file?.path) {
       throw new NotFoundError('Arquivo não recebido');
     }
 
+    const jobId = await enqueueSheetParseJob({
+      tenantId: actor.tenantId,
+      actor,
+      filePath: file.path,
+      originalName: file.originalname,
+    });
+    return { jobId };
+  }
+
+  async getJob(actor: AuthUser, jobId: string): Promise<SheetJob> {
+    if (isPlatformAdmin(actor)) throw new ForbiddenError();
+    const job = await getSheetJob(actor.tenantId, jobId);
+    if (job.actorId !== actor.id) {
+      throw new NotFoundError('Processamento não encontrado.');
+    }
+    return job;
+  }
+
+  async getParseDistincts(actor: AuthUser, parseId: string, header: string) {
+    if (!canImportSpreadsheet(actor)) throw new ForbiddenError();
+    if (isPlatformAdmin(actor)) throw new ForbiddenError();
+    const values = await readSheetParseDistincts(actor.tenantId, parseId, header);
+    return { header, values };
+  }
+
+  async enqueueImportFromParse(
+    actor: AuthUser,
+    input: ImportFromParseInput,
+  ): Promise<{ jobId: string }> {
+    if (!canImportSpreadsheet(actor)) throw new ForbiddenError();
+    if (isPlatformAdmin(actor)) throw new ForbiddenError();
+
+    const tenantId = input.empresaId ?? actor.tenantId;
+    if (tenantId !== actor.tenantId) throw new ForbiddenError();
+
+    await loadSheetParseMeta(actor.tenantId, input.parseId);
+
+    const jobId = await enqueueSheetImportJob({
+      tenantId: actor.tenantId,
+      actor,
+      input,
+    });
+    return { jobId };
+  }
+
+  async executeParseJob(
+    actor: AuthUser,
+    file: { path: string; originalname: string },
+    onProgress?: (progress: SheetJobProgress) => void | Promise<void>,
+  ) {
     try {
-      const parsed = await parseSpreadsheetFile(file.path);
-      const { headers, rows: uniquedRows } = uniquifyHeaders(
-        parsed.headers,
-        parsed.rows.map((r) => r.rawData),
-      );
+      await onProgress?.({ current: 0, total: 0, phase: 'parse' });
 
-      const emptyColumns = headers.filter(
-        (header) => !uniquedRows.some((row) => row[header]?.trim()),
-      );
-
-      const stored = await saveSheetParse({
+      const stored = await saveSheetParseFromFile({
         tenantId: actor.tenantId,
         fileName: file.originalname,
-        sheetName: 'Planilha 1',
-        headers,
-        rows: uniquedRows,
-        emptyColumns,
+        filePath: file.path,
+        onProgress: (rows) => {
+          void onProgress?.({ current: rows, total: rows, phase: 'parse' });
+        },
       });
 
       const sampleRows = await readSheetParseSample(
         actor.tenantId,
         stored.parseId,
-        SAMPLE_ROWS,
+        PARSE_SAMPLE_ROWS,
       );
 
-      return {
-        parseId: stored.parseId,
-        fileName: stored.fileName,
-        sheetName: stored.sheetName,
-        headers: stored.headers,
-        totalRows: stored.totalRows,
-        sampleRows,
-        emptyColumns: stored.emptyColumns,
-      };
+      await onProgress?.({
+        current: stored.totalRows,
+        total: stored.totalRows,
+        phase: 'parse',
+      });
+      return toParseJobResult(stored, sampleRows);
     } finally {
       try {
         const fs = await import('fs');
@@ -530,7 +613,28 @@ export class SheetsService {
     }
   }
 
-  async importFromParse(actor: AuthUser, input: ImportFromParseInput) {
+  async executeImportJob(
+    actor: AuthUser,
+    input: ImportFromParseInput,
+    onProgress?: (progress: SheetJobProgress) => void | Promise<void>,
+  ) {
+    await onProgress?.({ current: 0, total: 0, phase: 'import' });
+    const result = await this.importFromParse(actor, input, (current, total) => {
+      void onProgress?.({ current, total, phase: 'import' });
+    });
+    await onProgress?.({
+      current: result.imported + result.skipped,
+      total: result.imported + result.skipped,
+      phase: 'import',
+    });
+    return result;
+  }
+
+  async importFromParse(
+    actor: AuthUser,
+    input: ImportFromParseInput,
+    onProgress?: (current: number, total: number) => void,
+  ): Promise<SheetImportJobResult> {
     if (!canImportSpreadsheet(actor)) throw new ForbiddenError();
     if (isPlatformAdmin(actor)) throw new ForbiddenError();
 
@@ -538,6 +642,8 @@ export class SheetsService {
     if (tenantId !== actor.tenantId) throw new ForbiddenError();
 
     const meta = await loadSheetParseMeta(actor.tenantId, input.parseId);
+    const headerRowIndex = input.headerRowIndex ?? meta.suggestedHeaderRow ?? 1;
+    onProgress?.(0, meta.totalRows);
 
     const columns = input.columns.map((col, index) => ({
       name: col.name
@@ -551,6 +657,7 @@ export class SheetsService {
       options: col.options,
       sortOrder: col.sortOrder ?? index,
       sourceHeader: col.sourceHeader,
+      sourceColIndex: col.sourceColIndex,
     }));
 
     let planId: string | undefined;
@@ -559,47 +666,60 @@ export class SheetsService {
     const issues: Array<{ line?: number; message: string }> = [];
     let globalLine = 0;
     let firstChunk = true;
+    let headerIndexByName = new Map<string, number>();
 
-    for await (const rawBatch of iterateSheetParseRows(
-      actor.tenantId,
-      input.parseId,
-      IMPORT_FROM_PARSE_BATCH,
-    )) {
-      const rows = rawBatch.map((raw) => {
-        globalLine += 1;
-        const values: Record<string, string> = {};
-        for (const col of columns) {
-          values[col.name] = raw[col.sourceHeader] ?? '';
+    const mapValues = (dense: string[], rawByHeader?: Record<string, string>) => {
+      const values: Record<string, string> = {};
+      for (const col of columns) {
+        const fromIndex =
+          col.sourceColIndex >= 0 ? dense[col.sourceColIndex] : undefined;
+        const fallbackIndex = headerIndexByName.get(col.sourceHeader);
+        const fromHeaderIndex =
+          fallbackIndex != null ? dense[fallbackIndex] : undefined;
+        let value =
+          fromIndex ?? fromHeaderIndex ?? rawByHeader?.[col.sourceHeader] ?? '';
+        if (col.fieldType === ColumnFieldType.DATE && value.trim()) {
+          value = normalizeDateValue(value).value;
         }
+        values[col.name] = value;
+      }
+      return values;
+    };
 
-        const title =
-          pickMappedValue(values, [
-            'title',
-            'titulo',
-            'acao_corretiva',
-            'plano_risco_titulo',
-            'descricao_fato',
-            'registro',
-            'acao',
-          ]) ??
-          columns.map((c) => values[c.name]?.trim()).find(Boolean) ??
-          `Linha ${globalLine}`;
+    const toImportRow = (values: Record<string, string>, line: number) => {
+      const title =
+        pickMappedValue(values, [
+          'title',
+          'titulo',
+          'acao_corretiva',
+          'plano_risco_titulo',
+          'descricao_fato',
+          'registro',
+          'acao',
+        ]) ??
+        columns.map((c) => values[c.name]?.trim()).find(Boolean) ??
+        `Linha ${line}`;
 
-        return {
-          title: title.slice(0, 200),
-          description: pickMappedValue(values, ['descricao_fato', 'descricao', 'description']),
-          status: pickMappedValue(values, ['status']),
-          priority: pickMappedValue(values, ['prioridade', 'priority']),
-          dueDate: pickMappedValue(values, ['data_fim', 'prazo', 'dueDate', 'due_date']),
-          values,
-        };
-      });
+      return {
+        title: title.slice(0, 200),
+        description: pickMappedValue(values, ['descricao_fato', 'descricao', 'description']),
+        status: pickMappedValue(values, ['status']),
+        priority: pickMappedValue(values, ['prioridade', 'priority']),
+        dueDate: pickMappedValue(values, ['data_fim', 'prazo', 'dueDate', 'due_date']),
+        values,
+      };
+    };
 
+    const flush = async (
+      rows: ReturnType<typeof toImportRow>[],
+      totalHint: number,
+    ) => {
+      if (rows.length === 0) return;
       const result = await this.importJson(actor, {
         empresaId: input.empresaId,
         title: input.title,
         columns: firstChunk
-          ? columns.map(({ sourceHeader: _s, ...col }) => col)
+          ? columns.map(({ sourceHeader: _s, sourceColIndex: _i, ...col }) => col)
           : [],
         rows,
         options: {
@@ -608,18 +728,79 @@ export class SheetsService {
           skipColumnSync: !firstChunk,
         },
       });
-
       planId = result.planId;
       imported += result.imported;
       skipped += result.skipped;
       for (const issue of result.issues) {
-        issues.push(issue);
+        if (issues.length < IMPORT_ISSUE_CAP) issues.push(issue);
       }
       firstChunk = false;
+      onProgress?.(globalLine, totalHint);
+    };
+
+    const sourcePath = resolveSheetParseSourcePath(meta);
+    if (sourcePath) {
+      let batch: ReturnType<typeof toImportRow>[] = [];
+      const streamed = await streamSheetParseSource(
+        meta,
+        {
+          onHeaders: (headers) => {
+            headerIndexByName = new Map(headers.map((header, index) => [header, index]));
+          },
+          onRow: async (_raw, lineNumber, dense) => {
+            globalLine += 1;
+            const mapped = mapValues(dense);
+            const importRow = toImportRow(mapped, lineNumber);
+            if (isImportRowBlank(importRow)) {
+              skipped += 1;
+              return;
+            }
+            batch.push(importRow);
+            if (batch.length >= IMPORT_FROM_PARSE_BATCH) {
+              const chunk = batch;
+              batch = [];
+              await flush(chunk, 0);
+            }
+          },
+        },
+        { headerRowIndex, columnCount: meta.columnCount || columns.length },
+      );
+      await flush(batch, streamed.totalRows);
+      onProgress?.(streamed.totalRows, streamed.totalRows);
+    } else {
+      for await (const rawBatch of iterateSheetParseRows(
+        actor.tenantId,
+        input.parseId,
+        IMPORT_FROM_PARSE_BATCH,
+      )) {
+        const rows = rawBatch
+          .map((raw) => {
+            globalLine += 1;
+            return toImportRow(mapValues([], raw), globalLine);
+          })
+          .filter((row) => {
+            if (isImportRowBlank(row)) {
+              skipped += 1;
+              return false;
+            }
+            return true;
+          });
+        if (rows.length > 0) {
+          await flush(rows, meta.totalRows);
+        }
+      }
+    }
+
+    if (imported === 0) {
+      if (planId) {
+        await this.plansRepo.deletePlanIfEmpty(planId, tenantId);
+      }
+      throw new ValidationError(
+        'Nenhuma linha foi importada. Confira a linha de cabeçalho, o mapeamento das colunas e se há dados abaixo do cabeçalho.',
+      );
     }
 
     void deleteSheetParse(actor.tenantId, input.parseId);
-    void meta;
 
     return {
       planId: planId ?? '',
@@ -634,9 +815,12 @@ export class SheetsService {
    */
   async getAnalytics(actor: AuthUser, sheetId: string) {
     await this.assertSheet(actor, sheetId);
+    const scopeResponsibleId = isOperacional(actor) ? actor.id : undefined;
     const rows = await this.plansRepo.iteratePlanRowsForAnalytics(
       sheetId,
       actor.tenantId,
+      1000,
+      scopeResponsibleId,
     );
 
     const now = new Date();
@@ -670,8 +854,14 @@ export class SheetsService {
         values.data_fim = row.dueDate.toISOString().slice(0, 10);
       }
 
-      const hasData =
-        Object.values(values).some((v) => v?.trim()) || Boolean(row.title?.trim());
+      const hasData = !isBlankPlanRow({
+        title: row.title,
+        description: row.description,
+        responsibleName: null,
+        unitName: null,
+        dueDate: row.dueDate,
+        fieldValues: row.fieldValues,
+      });
       if (!hasData) continue;
       total += 1;
 
@@ -727,7 +917,7 @@ export class SheetsService {
 
     return {
       totalAcoes: total,
-      rowCount: rows.length,
+      rowCount: total,
       byStatus: toSlices(byStatus),
       byPrioridade: toSlices(byPrioridade).map((s) => ({
         ...s,
@@ -774,34 +964,41 @@ function pickMappedValue(
   return undefined;
 }
 
-/** Garante headers únicos (igual ao parser do front). */
-function uniquifyHeaders(
-  rawHeaders: string[],
-  rows: Record<string, string>[],
-): { headers: string[]; rows: Record<string, string>[] } {
-  const headers: string[] = [];
-  const headerIndex = new Map<string, number>();
-
-  rawHeaders.forEach((cell, index) => {
-    const label = (cell || `Coluna ${index + 1}`).trim() || `Coluna ${index + 1}`;
-    let unique = label;
-    let n = 2;
-    while (headerIndex.has(unique)) {
-      unique = `${label} (${n})`;
-      n += 1;
-    }
-    headers.push(unique);
-    headerIndex.set(unique, index);
+function isImportRowBlank(row: {
+  title: string;
+  description?: string;
+  dueDate?: string;
+  values: Record<string, string>;
+}): boolean {
+  return isBlankPlanRow({
+    title: row.title,
+    description: row.description,
+    dueDate: row.dueDate ? new Date(row.dueDate) : null,
+    fieldValues: Object.entries(row.values).map(([name, value]) => ({
+      value,
+      column: { name },
+    })),
   });
-
-  const remapped = rows.map((row) => {
-    const next: Record<string, string> = {};
-    headers.forEach((header, index) => {
-      const original = rawHeaders[index];
-      next[header] = row[header] ?? row[original] ?? '';
-    });
-    return next;
-  });
-
-  return { headers, rows: remapped };
 }
+
+function matchTenantMember(
+  members: Array<{ user: { id: string; name: string; email: string } }>,
+  raw: string,
+): { id: string; name: string } | undefined {
+  const needle = raw.trim().toLowerCase();
+  if (!needle) return undefined;
+  const exact = members.find(
+    (m) =>
+      m.user.name.toLowerCase() === needle || m.user.email.toLowerCase() === needle,
+  );
+  if (exact) return { id: exact.user.id, name: exact.user.name };
+  if (needle.length < 3) return undefined;
+  const fuzzy = members.find(
+    (m) =>
+      m.user.name.toLowerCase().includes(needle) ||
+      needle.includes(m.user.name.toLowerCase()) ||
+      m.user.email.toLowerCase().includes(needle),
+  );
+  return fuzzy ? { id: fuzzy.user.id, name: fuzzy.user.name } : undefined;
+}
+

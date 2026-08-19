@@ -1,7 +1,7 @@
 import { Worker, Job } from 'bullmq';
 import { ImportRowStatus, ImportStatus, Prisma } from '@prisma/client';
 import { prisma } from '@config/database';
-import { env } from '@config/env';
+import { getRedisConnection } from '@config/redis';
 import { logger } from '@shared/logger';
 import { AuditService } from '@shared/audit/audit.service';
 import { commitImportRows } from './imports.committer';
@@ -203,15 +203,6 @@ async function handleCommit(job: Job<CommitJobData>): Promise<void> {
 export function startImportsWorker(): Worker {
   if (worker) return worker;
 
-  const url = new URL(env.REDIS_URL);
-  const connection = {
-    host: url.hostname,
-    port: Number(url.port || 6379),
-    username: url.username || undefined,
-    password: url.password || undefined,
-    maxRetriesPerRequest: null,
-  };
-
   worker = new Worker(
     IMPORT_QUEUE_NAME,
     async (job) => {
@@ -229,7 +220,7 @@ export function startImportsWorker(): Worker {
           throw new Error(`Tipo de job desconhecido: ${job.name}`);
       }
     },
-    { connection, concurrency: 2 },
+    { connection: getRedisConnection(), concurrency: 2 },
   );
 
   worker.on('failed', (job, err) => {

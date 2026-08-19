@@ -33,7 +33,12 @@ export function errorHandler(
     return;
   }
 
+  const multerTooLarge =
+    err.name === 'MulterError' &&
+    (err as { code?: string }).code === 'LIMIT_FILE_SIZE';
+
   const bodyTooLarge =
+    multerTooLarge ||
     (err as { type?: string; status?: number; statusCode?: number }).type ===
       'entity.too.large' ||
     (err as { status?: number }).status === 413 ||

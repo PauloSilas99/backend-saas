@@ -12,7 +12,7 @@ import {
 import { generateRefreshToken, hashToken } from '@shared/helpers/crypto';
 import { AuditService } from '@shared/audit/audit.service';
 import { AuthRepository } from './auth.repository';
-import { LoginInput, RefreshInput, RegisterInput } from './auth.schemas';
+import { LoginInput, RefreshInput, RegisterInput, SwitchTenantInput } from './auth.schemas';
 
 interface TokenPair {
   accessToken: string;
@@ -141,7 +141,11 @@ export class AuthService {
 
     await this.authRepository.revokeRefreshToken(stored.id);
 
-    const membership = stored.user.memberships[0];
+    const preferredTenantId = input.tenantId ?? stored.tenantId ?? undefined;
+    const membership =
+      (preferredTenantId
+        ? stored.user.memberships.find((m) => m.tenantId === preferredTenantId)
+        : undefined) ?? stored.user.memberships[0];
     if (!membership) {
       throw new ForbiddenError('Usuário sem vínculo com empresa');
     }
@@ -176,6 +180,41 @@ export class AuthService {
     });
 
     return { success: true };
+  }
+
+  async switchTenant(actor: { id: string }, input: SwitchTenantInput) {
+    const user = await this.authRepository.findUserById(actor.id);
+    if (!user || !user.isActive) {
+      throw new UnauthorizedError();
+    }
+
+    const membership = user.memberships.find((m) => m.tenantId === input.tenantId);
+    if (!membership) {
+      throw new ForbiddenError('Sem acesso a esta empresa');
+    }
+
+    const tokens = await this.issueTokens({
+      id: user.id,
+      email: user.email,
+      name: user.name,
+      tokenVersion: user.tokenVersion,
+      tenantId: membership.tenantId,
+      role: membership.role,
+      membershipId: membership.id,
+    });
+
+    await this.auditService.log({
+      tenantId: membership.tenantId,
+      userId: user.id,
+      action: 'auth.switch-tenant',
+      resource: 'tenant',
+      resourceId: membership.tenantId,
+    });
+
+    return {
+      user: this.sanitizeUser(user, membership.role, membership.tenantId),
+      ...tokens,
+    };
   }
 
   async me(userId: string, tenantId: string) {
@@ -244,6 +283,7 @@ export class AuthService {
 
     await this.authRepository.createRefreshToken({
       userId: user.id,
+      tenantId: user.tenantId,
       tokenHash: hashToken(refreshToken),
       expiresAt,
     });

@@ -4,7 +4,6 @@ import usersRoutes from '@modules/users/users.routes';
 import companiesRoutes from '@modules/companies/companies.routes';
 import actionPlansRoutes from '@modules/action-plans/action-plans.routes';
 import sheetsRoutes from '@modules/action-plan-sheets/sheets.routes';
-import importsRoutes from '@modules/imports/imports.routes';
 import analyticsRoutes from '@modules/analytics/analytics.routes';
 import billingRoutes from '@modules/billing/billing.routes';
 import columnsRoutes from '@modules/columns/columns.routes';
@@ -29,7 +28,16 @@ router.use('/empresas/members', empresasMembersRouter);
 router.use('/unidades', unidadesRouter);
 router.use('/action-plans', actionPlansRoutes);
 router.use('/action-plan-sheets', sheetsRoutes);
-router.use('/imports', importsRoutes);
+router.use('/imports', (_req, res) => {
+  res.status(410).json({
+    success: false,
+    error: {
+      code: 'IMPORTS_RETIRED',
+      message:
+        'A API /imports foi aposentada. Use POST /action-plan-sheets/parse-upload e POST /action-plan-sheets/import-from-parse.',
+    },
+  });
+});
 router.use('/analytics', analyticsRoutes);
 router.use('/billing', billingRoutes);
 router.use('/columns', columnsRoutes);

@@ -1,14 +1,9 @@
 import { inject, injectable } from 'tsyringe';
-import { Role } from '@prisma/client';
+import { Prisma, Role } from '@prisma/client';
 import { ForbiddenError, NotFoundError, ValidationError } from '@shared/errors/AppError';
 import { AuditService } from '@shared/audit/audit.service';
 import { AuthUser } from '@/types/auth';
-import {
-  canViewAllCompanyActions,
-  isOperacional,
-  isPlatformAdmin,
-  isReadOnly,
-} from '@shared/helpers/rbac';
+import { isOperacional, isPlatformAdmin, isReadOnly } from '@shared/helpers/rbac';
 import { CalendarRepository } from './calendar.repository';
 import {
   CalendarRangeQuery,
@@ -39,20 +34,10 @@ export class CalendarService {
     const from = new Date(query.from);
     const to = new Date(query.to);
 
-    // Escopo pessoal: operacional só vê as próprias ações; gestor/gerente podem filtrar
-    const responsibleScope = isOperacional(actor)
+    // Operacional: só as próprias ações. Gestor/gerente/leitor: todas, salvo assigneeId.
+    const actionResponsibleId = isOperacional(actor)
       ? actor.id
       : query.assigneeId;
-
-    // Para agenda "pessoal" padrão, gerente/gestor sem filtro vê ações atribuídas a si + sem responsável
-    // e também pode ver todas se quiser (canViewAll). Preferência: se assigneeId não veio e é manager,
-    // inclui ações do próprio usuário + todas do tenant? Product said calendar is personal.
-    // → default: sempre foca no usuário logado (suas ações), managers podem passar assigneeId.
-    const actionResponsibleId =
-      responsibleScope ??
-      (canViewAllCompanyActions(actor) && query.assigneeId
-        ? query.assigneeId
-        : actor.id);
 
     const personalScope = isOperacional(actor) ? actor.id : query.assigneeId;
 
@@ -74,6 +59,8 @@ export class CalendarService {
 
     const overlayByRow = new Map(overlays.map((o) => [o.actionRowId, o]));
 
+    type CalendarRow = (typeof actionRows)[number];
+
     type ActionCalendarItem = {
       source: 'action';
       id: string;
@@ -83,8 +70,14 @@ export class CalendarService {
       status: string;
       priority: string | null;
       baseDueDate: Date | null;
-      startsAt: Date;
+      startsAt: Date | null;
       endsAt: Date | null;
+      dates: {
+        ocorrencia: Date | null;
+        inicio: Date | null;
+        prazo: Date | null;
+      };
+      registro: string | null;
       hasPersonalOverride: boolean;
       overlay: {
         id: string;
@@ -101,28 +94,39 @@ export class CalendarService {
       actionPlan: { id: string; title: string } | null;
     };
 
-    const actionItems: ActionCalendarItem[] = [];
+    const toItem = (
+      row: CalendarRow,
+      overlay: (typeof overlays)[number] | null,
+    ): ActionCalendarItem | null => {
+      if (overlay?.hidden) return null;
 
-    for (const row of actionRows) {
-      const overlay = overlayByRow.get(row.id) ?? null;
-      if (overlay?.hidden) continue;
+      const values = fieldValuesToMap(row.fieldValues);
+      const dates = {
+        ocorrencia: parseDateLike(values.data_ocorrencia),
+        inicio: parseDateLike(values.data_inicio),
+        prazo:
+          parseDateLike(values.data_fim) ??
+          parseDateLike(values.prazo) ??
+          row.dueDate,
+      };
+      const periodStart = overlay?.displayStartsAt ?? dates.inicio;
+      const periodEnd = overlay?.displayEndsAt ?? dates.prazo;
+      const visible = [dates.ocorrencia, periodStart, periodEnd];
+      if (!visible.some((d) => d && d >= from && d <= to)) return null;
 
-      const baseDueDate = row.dueDate;
-      const startsAt = overlay?.displayStartsAt ?? baseDueDate;
-      if (!startsAt) continue;
-      if (startsAt < from || startsAt > to) continue;
-
-      actionItems.push({
+      return {
         source: 'action',
         id: row.id,
         actionRowId: row.id,
-        title: row.title,
-        description: row.description,
-        status: row.status,
+        title: (values.acao_corretiva || values.registro || row.title).trim() || row.title,
+        description: row.description ?? values.descricao_fato ?? null,
+        status: values.status || row.status,
         priority: row.priority,
-        baseDueDate,
-        startsAt,
-        endsAt: overlay?.displayEndsAt ?? null,
+        baseDueDate: row.dueDate,
+        startsAt: periodStart ?? periodEnd ?? dates.ocorrencia,
+        endsAt: periodEnd,
+        dates,
+        registro: values.registro?.trim() || null,
         hasPersonalOverride: Boolean(overlay?.displayStartsAt || overlay?.displayEndsAt),
         overlay: overlay
           ? {
@@ -135,54 +139,45 @@ export class CalendarService {
             }
           : null,
         responsibleId: row.responsibleId,
-        responsibleName: row.responsibleName,
+        responsibleName: row.responsibleName ?? values.responsavel ?? null,
         responsible: row.responsible,
-        unitName: row.unitName,
+        unitName: row.unitName ?? values.unidade ?? null,
         actionPlan: row.actionPlan,
-      });
+      };
+    };
+
+    const actionItems: ActionCalendarItem[] = [];
+    const seen = new Set<string>();
+
+    for (const row of actionRows) {
+      const item = toItem(row, overlayByRow.get(row.id) ?? null);
+      if (!item) continue;
+      actionItems.push(item);
+      seen.add(row.id);
     }
 
-    // Overlays que remarcariam ações cuja baseDueDate está fora do range
-    for (const overlay of overlays) {
-      if (
-        overlay.hidden ||
-        !overlay.displayStartsAt ||
-        overlay.displayStartsAt < from ||
-        overlay.displayStartsAt > to ||
-        actionItems.some((i) => i.actionRowId === overlay.actionRowId)
-      ) {
-        continue;
-      }
-      const row = await this.calendarRepository.findActionRow(overlay.actionRowId, actor.tenantId);
-      if (!row) continue;
-      if (actionResponsibleId && row.responsibleId !== actionResponsibleId) continue;
+    const missingOverlayIds = overlays
+      .filter((overlay) => {
+        if (overlay.hidden || seen.has(overlay.actionRowId)) return false;
+        const start = overlay.displayStartsAt;
+        const end = overlay.displayEndsAt;
+        return (
+          (start != null && start >= from && start <= to) ||
+          (end != null && end >= from && end <= to)
+        );
+      })
+      .map((overlay) => overlay.actionRowId);
 
-      actionItems.push({
-        source: 'action',
-        id: row.id,
-        actionRowId: row.id,
-        title: row.title,
-        description: null,
-        status: row.status,
-        priority: null,
-        baseDueDate: row.dueDate,
-        startsAt: overlay.displayStartsAt,
-        endsAt: overlay.displayEndsAt ?? null,
-        hasPersonalOverride: true,
-        overlay: {
-          id: overlay.id,
-          displayStartsAt: overlay.displayStartsAt,
-          displayEndsAt: overlay.displayEndsAt,
-          hidden: overlay.hidden,
-          note: overlay.note,
-          color: overlay.color,
-        },
-        responsibleId: row.responsibleId,
-        responsibleName: null,
-        responsible: null,
-        unitName: null,
-        actionPlan: null,
-      });
+    const extraRows = await this.calendarRepository.findActionRowsByIds(
+      missingOverlayIds,
+      actor.tenantId,
+    );
+
+    for (const row of extraRows) {
+      if (actionResponsibleId && row.responsibleId !== actionResponsibleId) continue;
+      const item = toItem(row, overlayByRow.get(row.id) ?? null);
+      if (!item) continue;
+      actionItems.push(item);
     }
 
     const personalItems = personalActivities.map((a) => ({
@@ -201,9 +196,11 @@ export class CalendarService {
       createdBy: a.createdBy,
     }));
 
-    const items = [...actionItems, ...personalItems].sort(
-      (a, b) => new Date(a.startsAt!).getTime() - new Date(b.startsAt!).getTime(),
-    );
+    const items = [...actionItems, ...personalItems].sort((a, b) => {
+      const aTime = a.startsAt ? new Date(a.startsAt).getTime() : 0;
+      const bTime = b.startsAt ? new Date(b.startsAt).getTime() : 0;
+      return aTime - bTime;
+    });
 
     return {
       items,
@@ -211,7 +208,7 @@ export class CalendarService {
       meta: {
         from: query.from,
         to: query.to,
-        note: 'Itens source=action usam dueDate da base; overlay pessoal não altera a planilha.',
+        note: 'Itens source=action usam datas da planilha; overlay pessoal não altera a base.',
       },
     };
   }
@@ -483,4 +480,38 @@ export class CalendarService {
       throw new ValidationError('endsAt deve ser >= startsAt');
     }
   }
+}
+
+function jsonToString(value: Prisma.JsonValue | null | undefined): string {
+  if (value == null) return '';
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  return '';
+}
+
+function fieldValuesToMap(
+  fieldValues: Array<{ value: Prisma.JsonValue | null; column: { name: string } }>,
+): Record<string, string> {
+  const values: Record<string, string> = {};
+  for (const fv of fieldValues) {
+    values[fv.column.name] = jsonToString(fv.value);
+  }
+  return values;
+}
+
+function parseDateLike(raw: string | null | undefined): Date | null {
+  const v = raw?.trim();
+  if (!v) return null;
+  if (/^\d{4}-\d{2}-\d{2}/.test(v)) {
+    const d = new Date(`${v.slice(0, 10)}T12:00:00.000Z`);
+    return Number.isNaN(d.getTime()) ? null : d;
+  }
+  const match = v.match(/^(\d{1,2})[/.-](\d{1,2})[/.-](\d{4})$/);
+  if (match) {
+    const d = new Date(
+      `${match[3]}-${match[2].padStart(2, '0')}-${match[1].padStart(2, '0')}T12:00:00.000Z`,
+    );
+    return Number.isNaN(d.getTime()) ? null : d;
+  }
+  return null;
 }

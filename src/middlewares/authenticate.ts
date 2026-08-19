@@ -5,6 +5,7 @@ import { env } from '@config/env';
 import { UnauthorizedError } from '@shared/errors/AppError';
 import { AuthService } from '@modules/auth/auth.service';
 import { AuthUser } from '@/types/auth';
+import { enterTenantContext } from '@shared/tenancy/tenant-context';
 
 interface AccessTokenPayload {
   sub: string;
@@ -51,6 +52,7 @@ export async function authenticate(
       membershipId: payload.membershipId,
     };
 
+    enterTenantContext(payload.tenantId, payload.role);
     next();
   } catch (error) {
     next(error instanceof UnauthorizedError ? error : new UnauthorizedError('Token inválido'));

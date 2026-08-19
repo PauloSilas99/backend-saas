@@ -25,6 +25,17 @@ import {
   UpdateActionRowInput,
 } from './action-plans.schemas';
 
+function titleFromRowValues(values?: Record<string, unknown>): string {
+  if (!values) return '';
+  for (const key of ['acao_corretiva', 'descricao_fato', 'registro', 'title', 'titulo']) {
+    const raw = values[key];
+    if (typeof raw === 'string' && raw.trim().length >= 2) {
+      return raw.trim().slice(0, 200);
+    }
+  }
+  return '';
+}
+
 @injectable()
 export class ActionPlansService {
   constructor(
@@ -120,6 +131,7 @@ export class ActionPlansService {
     if (!plan) throw new NotFoundError('Plano de ação não encontrado');
 
     const row = await this.actionPlansRepository.createRow({
+      id: input.id,
       actionPlanId: planId,
       title: input.title,
       description: input.description,
@@ -133,7 +145,7 @@ export class ActionPlansService {
 
     const values = { ...(input.customFields ?? {}), ...(input.values ?? {}) };
     if (Object.keys(values).length > 0) {
-      await this.actionPlansRepository.upsertFieldValues(row.id, actor.tenantId, values);
+      await this.actionPlansRepository.upsertFieldValues(row.id, actor.tenantId, values, planId);
     }
 
     await this.actionPlansRepository.addHistory({
@@ -144,6 +156,38 @@ export class ActionPlansService {
     });
 
     return this.actionPlansRepository.findRow(row.id, actor.tenantId);
+  }
+
+  /**
+   * Upsert usado pelo save da planilha: atualiza se a linha existir neste plano,
+   * restaura se estava soft-deleted, senão cria — nunca 404 por ID órfão.
+   */
+  async saveSheetRow(
+    actor: AuthUser,
+    planId: string,
+    input: CreateActionRowInput & UpdateActionRowInput & { id?: string },
+  ) {
+    const rowId = input.id;
+    if (rowId) {
+      const existing = await this.actionPlansRepository.findRow(rowId, actor.tenantId, true);
+      if (existing && existing.actionPlanId === planId) {
+        if (existing.deletedAt) {
+          await this.actionPlansRepository.restoreRow(rowId);
+        }
+        return this.updateRow(actor, rowId, input);
+      }
+      if (existing) {
+        const { id: _ignored, ...rest } = input;
+        return this.addRow(actor, planId, {
+          ...rest,
+          title: rest.title?.trim() || titleFromRowValues(rest.values) || "Nova ação",
+        });
+      }
+    }
+    return this.addRow(actor, planId, {
+      ...input,
+      title: input.title?.trim() || titleFromRowValues(input.values) || "Nova ação",
+    });
   }
 
   async updateRow(actor: AuthUser, rowId: string, input: UpdateActionRowInput) {
@@ -195,7 +239,12 @@ export class ActionPlansService {
 
     const values = { ...(input.customFields ?? {}), ...(input.values ?? {}) };
     if (Object.keys(values).length > 0) {
-      await this.actionPlansRepository.upsertFieldValues(rowId, actor.tenantId, values);
+      await this.actionPlansRepository.upsertFieldValues(
+        rowId,
+        actor.tenantId,
+        values,
+        row.actionPlanId,
+      );
     }
 
     if (input.status && input.status !== row.status) {

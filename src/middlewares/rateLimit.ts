@@ -6,6 +6,8 @@ export const apiRateLimiter = rateLimit({
   max: env.RATE_LIMIT_MAX,
   standardHeaders: true,
   legacyHeaders: false,
+  skip: (req) =>
+    req.method === 'GET' && /\/action-plan-sheets\/jobs\//.test(req.path),
   message: {
     success: false,
     error: {

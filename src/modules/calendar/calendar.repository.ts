@@ -1,5 +1,7 @@
 import { inject, injectable } from 'tsyringe';
 import {
+  ActionPriority,
+  ActionStatus,
   CalendarActivityStatus,
   CalendarOverrideType,
   Prisma,
@@ -157,7 +159,39 @@ export class CalendarRepository {
     });
   }
 
-  /** Ações da base (planilha) com dueDate no período — fonte das datas do calendário. */
+  private static readonly DATE_COLUMN_NAMES = [
+    'data_ocorrencia',
+    'data_inicio',
+    'data_fim',
+    'prazo',
+  ];
+
+  private actionRowCalendarSelect() {
+    return {
+      id: true,
+      title: true,
+      description: true,
+      status: true,
+      priority: true,
+      dueDate: true,
+      responsibleId: true,
+      responsibleName: true,
+      unitName: true,
+      actionPlan: { select: { id: true, title: true } },
+      responsible: { select: { id: true, name: true, email: true } },
+      fieldValues: {
+        select: {
+          value: true,
+          column: { select: { name: true } },
+        },
+      },
+    } as const;
+  }
+
+  /**
+   * Ações da base (planilha) no período.
+   * Inclui dueDate nativo e colunas data_ocorrencia / data_inicio / data_fim.
+   */
   listActionRowsForCalendar(
     tenantId: string,
     from: Date,
@@ -167,23 +201,22 @@ export class CalendarRepository {
     return this.prisma.actionPlanRow.findMany({
       where: {
         deletedAt: null,
-        dueDate: { gte: from, lte: to },
         actionPlan: { tenantId },
         ...(responsibleId ? { responsibleId } : {}),
+        OR: [
+          { dueDate: { gte: from, lte: to } },
+          {
+            fieldValues: {
+              some: {
+                column: {
+                  name: { in: CalendarRepository.DATE_COLUMN_NAMES },
+                },
+              },
+            },
+          },
+        ],
       },
-      select: {
-        id: true,
-        title: true,
-        description: true,
-        status: true,
-        priority: true,
-        dueDate: true,
-        responsibleId: true,
-        responsibleName: true,
-        unitName: true,
-        actionPlan: { select: { id: true, title: true } },
-        responsible: { select: { id: true, name: true, email: true } },
-      },
+      select: this.actionRowCalendarSelect(),
       orderBy: { dueDate: 'asc' },
     });
   }
@@ -198,6 +231,18 @@ export class CalendarRepository {
         responsibleId: true,
         status: true,
       },
+    });
+  }
+
+  findActionRowsByIds(ids: string[], tenantId: string) {
+    if (ids.length === 0) return Promise.resolve([]);
+    return this.prisma.actionPlanRow.findMany({
+      where: {
+        id: { in: ids },
+        deletedAt: null,
+        actionPlan: { tenantId },
+      },
+      select: this.actionRowCalendarSelect(),
     });
   }
 

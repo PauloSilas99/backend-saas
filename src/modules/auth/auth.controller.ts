@@ -43,6 +43,16 @@ export class AuthController {
     }
   }
 
+  async switchTenant(req: Request, res: Response, next: NextFunction) {
+    try {
+      const authService = container.resolve(AuthService);
+      const result = await authService.switchTenant(req.user!, req.body);
+      res.json({ success: true, data: result });
+    } catch (error) {
+      next(error);
+    }
+  }
+
   async me(req: Request, res: Response, next: NextFunction) {
     try {
       const authService = container.resolve(AuthService);

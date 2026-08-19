@@ -1,4 +1,5 @@
 import { container } from 'tsyringe';
+import { PrismaClient } from '@prisma/client';
 import { prisma } from '@config/database';
 import { AuthRepository } from '@modules/auth/auth.repository';
 import { AuthService } from '@modules/auth/auth.service';
@@ -26,7 +27,7 @@ import { TenantPolicyService } from '@shared/policies/tenant-policy.service';
 import { createBillingProvider } from '@modules/billing/providers';
 
 export function registerDependencies(): void {
-  container.registerInstance('PrismaClient', prisma);
+  container.registerInstance('PrismaClient', prisma as unknown as PrismaClient);
   container.registerSingleton(AuditService);
   container.registerSingleton(TenantPolicyService);
   container.registerSingleton(AuthRepository);

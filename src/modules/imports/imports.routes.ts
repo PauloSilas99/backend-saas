@@ -1,3 +1,8 @@
+/**
+ * Rotas históricas do domínio /imports.
+ * Não montar na API pública — o router em src/routes/index.ts responde 410
+ * e aponta para /action-plan-sheets. O módulo permanece para jobs/parser internos.
+ */
 import { randomUUID } from 'crypto';
 import { Router } from 'express';
 import multer from 'multer';

@@ -65,10 +65,12 @@ export class CompaniesService {
     const existing = await this.companiesRepository.findBySlug(slug);
     if (existing) throw new ConflictError('Slug já em uso');
 
-    const company = await this.companiesRepository.create({
+    const company = await this.companiesRepository.createWithOwner({
       name: input.name,
       slug,
       document: input.document,
+      ownerUserId: actor.id,
+      role: Role.GERENTE,
     });
 
     await this.auditService.log({

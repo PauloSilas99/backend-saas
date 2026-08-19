@@ -3,7 +3,7 @@ import { authenticate } from '@middlewares/authenticate';
 import { validate } from '@middlewares/validate';
 import { authRateLimiter } from '@middlewares/rateLimit';
 import { AuthController } from './auth.controller';
-import { loginSchema, refreshSchema, registerSchema } from './auth.schemas';
+import { loginSchema, refreshSchema, registerSchema, switchTenantSchema } from './auth.schemas';
 
 const controller = new AuthController();
 const router = Router();
@@ -37,6 +37,13 @@ router.post('/refresh', authRateLimiter, validate({ body: refreshSchema }), (req
 );
 
 router.post('/logout', authenticate, (req, res, next) => controller.logout(req, res, next));
+
+router.post(
+  '/switch-tenant',
+  authenticate,
+  validate({ body: switchTenantSchema }),
+  (req, res, next) => controller.switchTenant(req, res, next),
+);
 
 router.get('/me', authenticate, (req, res, next) => controller.me(req, res, next));
 

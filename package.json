@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "NODE_OPTIONS='--max-old-space-size=4096' tsx watch src/server.ts",
     "build": "tsc && tsc-alias",
+    "prestart": "npm run build",
     "start": "NODE_OPTIONS='--max-old-space-size=4096' node dist/server.js",
     "test": "vitest run",
     "test:watch": "vitest",

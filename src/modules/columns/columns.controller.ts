@@ -7,7 +7,9 @@ export class ColumnsController {
     try {
       const service = container.resolve(ColumnsService);
       const includeDeleted = req.query.includeDeleted === 'true';
-      const data = await service.list(req.user!, includeDeleted);
+      const actionPlanId =
+        typeof req.query.actionPlanId === 'string' ? req.query.actionPlanId : undefined;
+      const data = await service.list(req.user!, includeDeleted, actionPlanId);
       res.json({ success: true, data });
     } catch (error) {
       next(error);

@@ -1,5 +1,5 @@
 import { Queue } from 'bullmq';
-import { env } from '@config/env';
+import { getRedisConnection } from '@config/redis';
 import { IMPORT_JOB_TYPES, IMPORT_QUEUE_NAME } from './imports.constants';
 
 export type ParseJobData = {
@@ -19,17 +19,6 @@ export type CommitJobData = {
   actionPlanId?: string;
   actionPlanTitle?: string;
 };
-
-function getRedisConnection() {
-  const url = new URL(env.REDIS_URL);
-  return {
-    host: url.hostname,
-    port: Number(url.port || 6379),
-    username: url.username || undefined,
-    password: url.password || undefined,
-    maxRetriesPerRequest: null,
-  };
-}
 
 let queue: Queue | null = null;
 

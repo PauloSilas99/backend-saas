@@ -85,6 +85,16 @@ enum ColumnHistoryAction {
   RESTORED
 }
 
+/** Papel nativo da coluna no workbook — alimenta prazo, ACL e calendário. */
+enum ColumnSemanticRole {
+  NONE
+  DUE_DATE
+  ASSIGNEE
+  TITLE
+  STATUS
+  PRIORITY
+}
+
 enum RiskStatus {
   OPEN
   MITIGATING
@@ -211,6 +221,7 @@ model Membership {
 model RefreshToken {
   id        String    @id @default(uuid())
   userId    String    @map("user_id")
+  tenantId  String?   @map("tenant_id")
   tokenHash String    @map("token_hash")
   expiresAt DateTime  @map("expires_at")
   revokedAt DateTime? @map("revoked_at")
@@ -295,6 +306,7 @@ model ActionPlan {
   unit    Unit?           @relation(fields: [unitId], references: [id])
   owner   User            @relation("ActionPlanOwner", fields: [ownerId], references: [id])
   rows    ActionPlanRow[]
+  columns ActionColumn[]
   imports Import[]
 
   @@map("action_plans")
@@ -353,28 +365,32 @@ model ActionHistory {
 }
 
 model ActionColumn {
-  id          String          @id @default(uuid())
-  tenantId    String          @map("tenant_id")
-  name        String
-  label       String
-  fieldType   ColumnFieldType @map("field_type")
-  required    Boolean         @default(false)
-  options     Json?
-  sortOrder   Int             @default(0) @map("sort_order")
-  isActive    Boolean         @default(true) @map("is_active")
-  deletedAt   DateTime?       @map("deleted_at")
-  deletedById String?         @map("deleted_by_id")
-  deleteReason String?        @map("delete_reason")
-  createdAt   DateTime        @default(now()) @map("created_at")
-  updatedAt   DateTime        @updatedAt @map("updated_at")
+  id           String             @id @default(uuid())
+  tenantId     String             @map("tenant_id")
+  actionPlanId String             @map("action_plan_id")
+  name         String
+  label        String
+  fieldType    ColumnFieldType    @map("field_type")
+  semanticRole ColumnSemanticRole @default(NONE) @map("semantic_role")
+  required     Boolean            @default(false)
+  options      Json?
+  sortOrder    Int                @default(0) @map("sort_order")
+  isActive     Boolean            @default(true) @map("is_active")
+  deletedAt    DateTime?          @map("deleted_at")
+  deletedById  String?            @map("deleted_by_id")
+  deleteReason String?            @map("delete_reason")
+  createdAt    DateTime           @default(now()) @map("created_at")
+  updatedAt    DateTime           @updatedAt @map("updated_at")
 
-  tenant    Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  deletedBy User?                  @relation("ColumnDeletedBy", fields: [deletedById], references: [id])
-  values    ActionFieldValue[]
-  histories ActionColumnHistory[]
+  tenant     Tenant                @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  actionPlan ActionPlan            @relation(fields: [actionPlanId], references: [id], onDelete: Cascade)
+  deletedBy  User?                 @relation("ColumnDeletedBy", fields: [deletedById], references: [id])
+  values     ActionFieldValue[]
+  histories  ActionColumnHistory[]
 
-  @@unique([tenantId, name])
+  @@unique([actionPlanId, name])
   @@index([tenantId, isActive, deletedAt])
+  @@index([actionPlanId, isActive, deletedAt])
   @@map("action_columns")
 }
 

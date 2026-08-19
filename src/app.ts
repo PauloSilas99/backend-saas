@@ -2,7 +2,6 @@ import 'reflect-metadata';
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
-import path from 'path';
 import swaggerUi from 'swagger-ui-express';
 import pinoHttp from 'pino-http';
 import { env } from '@config/env';
@@ -34,7 +33,6 @@ app.use(
 );
 app.use(apiRateLimiter);
 
-app.use('/uploads', express.static(path.resolve(process.cwd(), env.UPLOAD_DIR)));
 app.use('/docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 app.get('/docs.json', (_req, res) => res.json(swaggerSpec));
 

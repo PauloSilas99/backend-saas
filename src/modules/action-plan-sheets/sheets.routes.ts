@@ -17,6 +17,7 @@ import {
   importFromParseSchema,
   importSheetJsonSchema,
   listSheetRowsQuerySchema,
+  parseDistinctsQuerySchema,
   resolveActionSchema,
   updateActionRowSchema,
 } from '@modules/action-plans/action-plans.schemas';
@@ -52,6 +53,19 @@ router.post(
   (req, res, next) => controller.parseUpload(req, res, next),
 );
 
+router.get(
+  '/jobs/:jobId',
+  roleGuard(Role.GERENTE, Role.GESTOR),
+  (req, res, next) => controller.getJob(req, res, next),
+);
+
+router.get(
+  '/parses/:parseId/distincts',
+  roleGuard(Role.GERENTE, Role.GESTOR),
+  validate({ query: parseDistinctsQuerySchema }),
+  (req, res, next) => controller.getParseDistincts(req, res, next),
+);
+
 router.post(
   '/import-from-parse',
   roleGuard(Role.GERENTE, Role.GESTOR),
@@ -82,6 +96,12 @@ router.get(
 );
 
 router.get('/:id/analytics', (req, res, next) => controller.getAnalytics(req, res, next));
+
+router.delete(
+  '/:id/rows/blank',
+  roleGuard(Role.GERENTE, Role.GESTOR),
+  (req, res, next) => controller.deleteBlankRows(req, res, next),
+);
 
 router.put(
   '/:id',

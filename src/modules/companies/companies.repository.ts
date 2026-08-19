@@ -1,5 +1,5 @@
 import { inject, injectable } from 'tsyringe';
-import { PrismaClient } from '@prisma/client';
+import { PrismaClient, Role } from '@prisma/client';
 
 @injectable()
 export class CompaniesRepository {
@@ -32,6 +32,39 @@ export class CompaniesRepository {
 
   create(data: { name: string; slug: string; document?: string }) {
     return this.prisma.tenant.create({ data });
+  }
+
+  createWithOwner(data: {
+    name: string;
+    slug: string;
+    document?: string;
+    ownerUserId: string;
+    role: Role;
+  }) {
+    return this.prisma.$transaction(async (tx) => {
+      const tenant = await tx.tenant.create({
+        data: {
+          name: data.name,
+          slug: data.slug,
+          document: data.document,
+        },
+      });
+      await tx.membership.create({
+        data: {
+          userId: data.ownerUserId,
+          tenantId: tenant.id,
+          role: data.role,
+        },
+      });
+      return tx.tenant.findUniqueOrThrow({
+        where: { id: tenant.id },
+        include: {
+          units: true,
+          subscription: { include: { plan: true } },
+          _count: { select: { memberships: true } },
+        },
+      });
+    });
   }
 
   update(id: string, data: { name?: string; document?: string; isActive?: boolean }) {

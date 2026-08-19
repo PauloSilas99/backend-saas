@@ -37,7 +37,7 @@ export class SheetsController {
   async getPrimary(req: Request, res: Response, next: NextFunction) {
     try {
       const service = container.resolve(SheetsService);
-      const data = await service.getOrCreateForEmpresa(
+      const data = await service.getPrimaryForEmpresa(
         req.user!,
         req.query.empresaId as string | undefined,
       );
@@ -125,7 +125,10 @@ export class SheetsController {
   async updateRow(req: Request, res: Response, next: NextFunction) {
     try {
       const plans = container.resolve(ActionPlansService);
-      const data = await plans.updateRow(req.user!, req.params.rowId, req.body);
+      const data = await plans.saveSheetRow(req.user!, req.params.id, {
+        ...req.body,
+        id: req.params.rowId,
+      });
       res.json({ success: true, data });
     } catch (error) {
       next(error);
@@ -167,8 +170,29 @@ export class SheetsController {
         return;
       }
       const service = container.resolve(SheetsService);
-      const data = await service.parseUpload(req.user!, req.file);
-      res.status(201).json({ success: true, data });
+      const data = await service.enqueueParseUpload(req.user!, req.file);
+      res.status(202).json({ success: true, data });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async getJob(req: Request, res: Response, next: NextFunction) {
+    try {
+      const service = container.resolve(SheetsService);
+      const data = await service.getJob(req.user!, req.params.jobId);
+      res.json({ success: true, data });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async getParseDistincts(req: Request, res: Response, next: NextFunction) {
+    try {
+      const service = container.resolve(SheetsService);
+      const header = String(req.query.header ?? '');
+      const data = await service.getParseDistincts(req.user!, req.params.parseId, header);
+      res.json({ success: true, data });
     } catch (error) {
       next(error);
     }
@@ -177,8 +201,8 @@ export class SheetsController {
   async importFromParse(req: Request, res: Response, next: NextFunction) {
     try {
       const service = container.resolve(SheetsService);
-      const data = await service.importFromParse(req.user!, req.body);
-      res.status(201).json({ success: true, data });
+      const data = await service.enqueueImportFromParse(req.user!, req.body);
+      res.status(202).json({ success: true, data });
     } catch (error) {
       next(error);
     }
@@ -202,6 +226,16 @@ export class SheetsController {
     try {
       const service = container.resolve(SheetsService);
       const data = await service.getAnalytics(req.user!, req.params.id);
+      res.json({ success: true, data });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async deleteBlankRows(req: Request, res: Response, next: NextFunction) {
+    try {
+      const service = container.resolve(SheetsService);
+      const data = await service.deleteBlankRows(req.user!, req.params.id);
       res.json({ success: true, data });
     } catch (error) {
       next(error);

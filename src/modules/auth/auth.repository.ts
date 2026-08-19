@@ -81,7 +81,12 @@ export class AuthRepository {
     });
   }
 
-  createRefreshToken(data: { userId: string; tokenHash: string; expiresAt: Date }) {
+  createRefreshToken(data: {
+    userId: string;
+    tenantId?: string;
+    tokenHash: string;
+    expiresAt: Date;
+  }) {
     return this.prisma.refreshToken.create({ data });
   }
 
