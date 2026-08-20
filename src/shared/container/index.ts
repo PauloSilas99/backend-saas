@@ -24,12 +24,14 @@ import { CalendarRepository } from '@modules/calendar/calendar.repository';
 import { CalendarService } from '@modules/calendar/calendar.service';
 import { AuditService } from '@shared/audit/audit.service';
 import { TenantPolicyService } from '@shared/policies/tenant-policy.service';
+import { MailService } from '@shared/mail/mail.service';
 import { createBillingProvider } from '@modules/billing/providers';
 
 export function registerDependencies(): void {
   container.registerInstance('PrismaClient', prisma as unknown as PrismaClient);
   container.registerSingleton(AuditService);
   container.registerSingleton(TenantPolicyService);
+  container.registerSingleton(MailService);
   container.registerSingleton(AuthRepository);
   container.registerSingleton(AuthService);
   container.registerSingleton(UsersRepository);

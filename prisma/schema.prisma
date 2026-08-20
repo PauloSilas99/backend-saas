@@ -131,17 +131,21 @@ enum CalendarOverrideType {
 }
 
 model User {
-  id           String   @id @default(uuid())
-  email        String   @unique
-  passwordHash String   @map("password_hash")
-  name         String
-  isActive     Boolean  @default(true) @map("is_active")
-  tokenVersion Int      @default(0) @map("token_version")
-  createdAt    DateTime @default(now()) @map("created_at")
-  updatedAt    DateTime @updatedAt @map("updated_at")
+  id              String    @id @default(uuid())
+  email           String    @unique
+  passwordHash    String    @map("password_hash")
+  name            String
+  /** Contato WhatsApp informado no cadastro (somente dígitos / E.164 preferível). */
+  whatsapp        String?   @map("whatsapp")
+  isActive        Boolean   @default(true) @map("is_active")
+  emailVerifiedAt DateTime? @map("email_verified_at")
+  tokenVersion    Int       @default(0) @map("token_version")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
 
   memberships      Membership[]
   refreshTokens    RefreshToken[]
+  authTokens       AuthToken[]
   actionPlans      ActionPlan[]       @relation("ActionPlanOwner")
   assignedRows     ActionPlanRow[]    @relation("AssignedRows")
   auditLogs        AuditLog[]
@@ -157,6 +161,27 @@ model User {
   calendarActionOverlays CalendarActionOverlay[] @relation("CalendarActionOverlayOwner")
 
   @@map("users")
+}
+
+enum AuthTokenType {
+  EMAIL_VERIFY
+  PASSWORD_RESET
+}
+
+model AuthToken {
+  id        String        @id @default(uuid())
+  userId    String        @map("user_id")
+  type      AuthTokenType
+  tokenHash String        @map("token_hash")
+  expiresAt DateTime      @map("expires_at")
+  usedAt    DateTime?     @map("used_at")
+  createdAt DateTime      @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([tokenHash])
+  @@index([userId, type])
+  @@map("auth_tokens")
 }
 
 model Tenant {

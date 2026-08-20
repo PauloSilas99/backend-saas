@@ -62,4 +62,54 @@ export class AuthController {
       next(error);
     }
   }
+
+  async updateMe(req: Request, res: Response, next: NextFunction) {
+    try {
+      const authService = container.resolve(AuthService);
+      const result = await authService.updateMe(req.user!.id, req.user!.tenantId, req.body);
+      res.json({ success: true, data: result });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async verifyEmail(req: Request, res: Response, next: NextFunction) {
+    try {
+      const authService = container.resolve(AuthService);
+      const result = await authService.verifyEmail(req.body);
+      res.json({ success: true, data: result });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async resendVerification(req: Request, res: Response, next: NextFunction) {
+    try {
+      const authService = container.resolve(AuthService);
+      const result = await authService.resendVerification(req.body.email);
+      res.json({ success: true, data: result });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async forgotPassword(req: Request, res: Response, next: NextFunction) {
+    try {
+      const authService = container.resolve(AuthService);
+      const result = await authService.forgotPassword(req.body);
+      res.json({ success: true, data: result });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async resetPassword(req: Request, res: Response, next: NextFunction) {
+    try {
+      const authService = container.resolve(AuthService);
+      const result = await authService.resetPassword(req.body);
+      res.json({ success: true, data: result });
+    } catch (error) {
+      next(error);
+    }
+  }
 }

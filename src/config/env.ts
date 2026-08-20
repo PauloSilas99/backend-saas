@@ -29,6 +29,14 @@ const envSchema = z.object({
   UPLOAD_MAX_SIZE_MB: z.coerce.number().default(50),
   UPLOAD_DIR: z.string().default('uploads'),
   REDIS_URL: z.string().default('redis://localhost:6379'),
+  /** URL pública do front (links de verificação / reset). */
+  FRONTEND_URL: z.string().default('http://localhost:3000'),
+  /** SMTP opcional — sem isso, e-mails vão para o log (dev). */
+  SMTP_HOST: z.string().optional().default(''),
+  SMTP_PORT: z.coerce.number().default(587),
+  SMTP_USER: z.string().optional().default(''),
+  SMTP_PASS: z.string().optional().default(''),
+  SMTP_FROM: z.string().default('noreply@saas.local'),
 });
 
 const parsed = envSchema.safeParse(process.env);

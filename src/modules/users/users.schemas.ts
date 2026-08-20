@@ -49,6 +49,10 @@ export const listUsersQuerySchema = z.object({
   q: z.string().optional(),
 });
 
+export const setUserActiveSchema = z.object({
+  isActive: z.boolean(),
+});
+
 export type CreateUserInput = {
   name: string;
   email: string;

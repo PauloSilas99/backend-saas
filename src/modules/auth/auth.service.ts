@@ -1,7 +1,8 @@
 import { inject, injectable } from 'tsyringe';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
-import { Role } from '@prisma/client';
+import { randomBytes } from 'crypto';
+import { AuthTokenType, Role } from '@prisma/client';
 import { env } from '@config/env';
 import {
   ConflictError,
@@ -11,8 +12,18 @@ import {
 } from '@shared/errors/AppError';
 import { generateRefreshToken, hashToken } from '@shared/helpers/crypto';
 import { AuditService } from '@shared/audit/audit.service';
+import { MailService } from '@shared/mail/mail.service';
 import { AuthRepository } from './auth.repository';
-import { LoginInput, RefreshInput, RegisterInput, SwitchTenantInput } from './auth.schemas';
+import {
+  ForgotPasswordInput,
+  LoginInput,
+  RefreshInput,
+  RegisterInput,
+  ResetPasswordInput,
+  SwitchTenantInput,
+  UpdateMeInput,
+  VerifyEmailInput,
+} from './auth.schemas';
 
 interface TokenPair {
   accessToken: string;
@@ -25,6 +36,7 @@ export class AuthService {
   constructor(
     @inject(AuthRepository) private readonly authRepository: AuthRepository,
     @inject(AuditService) private readonly auditService: AuditService,
+    @inject(MailService) private readonly mailService: MailService,
   ) {}
 
   async register(input: RegisterInput) {
@@ -49,24 +61,22 @@ export class AuthService {
     }
 
     const passwordHash = await bcrypt.hash(input.password, 10);
+    const smtpConfigured = Boolean(env.SMTP_HOST?.trim());
     const result = await this.authRepository.createUserWithTenant({
       name: input.name,
       email: input.email.toLowerCase(),
       passwordHash,
+      whatsapp: input.whatsapp,
       tenantName,
       tenantSlug,
       role: Role.GERENTE,
+      emailVerified: !smtpConfigured,
     });
 
-    const tokens = await this.issueTokens({
-      id: result.user.id,
-      email: result.user.email,
-      name: result.user.name,
-      tokenVersion: result.user.tokenVersion,
-      tenantId: result.tenant.id,
-      role: result.membership.role,
-      membershipId: result.membership.id,
-    });
+    let verify: { token: string; devUrl: string } | null = null;
+    if (smtpConfigured) {
+      verify = await this.issueEmailVerification(result.user.id, result.user.email);
+    }
 
     await this.auditService.log({
       tenantId: result.tenant.id,
@@ -76,21 +86,48 @@ export class AuthService {
       resourceId: result.user.id,
     });
 
+    if (smtpConfigured && verify) {
+      return {
+        verificationRequired: true as const,
+        email: result.user.email,
+        message:
+          'Conta criada. Verifique seu e-mail. Depois disso, um administrador libera o acesso.',
+        ...(env.NODE_ENV !== 'production' && verify.devUrl
+          ? { devVerificationUrl: verify.devUrl }
+          : {}),
+      };
+    }
+
     return {
-      user: this.sanitizeUser(result.user, result.membership.role, result.tenant.id),
-      ...tokens,
+      verificationRequired: false as const,
+      pendingAdminApproval: true as const,
+      email: result.user.email,
+      message:
+        'Conta criada. Aguarde um administrador liberar o acesso para você entrar.',
     };
   }
 
   async login(input: LoginInput) {
     const user = await this.authRepository.findUserByEmail(input.email.toLowerCase());
-    if (!user || !user.isActive) {
+    if (!user) {
       throw new UnauthorizedError('Credenciais inválidas');
     }
 
     const validPassword = await bcrypt.compare(input.password, user.passwordHash);
     if (!validPassword) {
       throw new UnauthorizedError('Credenciais inválidas');
+    }
+
+    if (!user.emailVerifiedAt) {
+      throw new ForbiddenError(
+        'E-mail ainda não confirmado. Verifique sua caixa de entrada ou reenvie o link.',
+      );
+    }
+
+    if (!user.isActive) {
+      throw new ForbiddenError(
+        'Sem acesso a conta. Aguarde a liberação do administrador.',
+      );
     }
 
     let membership = user.memberships[0];
@@ -137,6 +174,10 @@ export class AuthService {
 
     if (!stored.user.isActive) {
       throw new UnauthorizedError('Usuário inativo');
+    }
+
+    if (!stored.user.emailVerifiedAt) {
+      throw new UnauthorizedError('E-mail não confirmado');
     }
 
     await this.authRepository.revokeRefreshToken(stored.id);
@@ -230,6 +271,7 @@ export class AuthService {
 
     return {
       ...this.sanitizeUser(user, membership.role, tenantId),
+      emailVerifiedAt: user.emailVerifiedAt,
       tenant: {
         id: membership.tenant.id,
         name: membership.tenant.name,
@@ -245,6 +287,152 @@ export class AuthService {
     };
   }
 
+  async updateMe(userId: string, tenantId: string, input: UpdateMeInput) {
+    const user = await this.authRepository.findUserById(userId);
+    if (!user || !user.isActive) {
+      throw new UnauthorizedError();
+    }
+
+    if (input.currentPassword && input.newPassword) {
+      const valid = await bcrypt.compare(input.currentPassword, user.passwordHash);
+      if (!valid) {
+        throw new ValidationError('Senha atual incorreta');
+      }
+      const passwordHash = await bcrypt.hash(input.newPassword, 10);
+      await this.authRepository.updatePassword(userId, passwordHash);
+    }
+
+    if (input.name?.trim()) {
+      await this.authRepository.updateProfile(userId, { name: input.name.trim() });
+    }
+
+    return this.me(userId, tenantId);
+  }
+
+  async verifyEmail(input: VerifyEmailInput) {
+    const tokenHash = hashToken(input.token);
+    const stored = await this.authRepository.findValidAuthToken(
+      tokenHash,
+      AuthTokenType.EMAIL_VERIFY,
+    );
+    if (!stored) {
+      throw new ValidationError('Link de verificação inválido ou expirado');
+    }
+
+    await this.authRepository.markAuthTokenUsed(stored.id);
+    await this.authRepository.markEmailVerified(stored.userId);
+
+    await this.mailService.send({
+      to: stored.user.email,
+      subject: 'Bem-vindo — aguardando liberação de acesso',
+      text: [
+        `Olá${stored.user.name ? `, ${stored.user.name}` : ''}!`,
+        '',
+        'Seu e-mail foi confirmado com sucesso.',
+        'Aguarde um administrador liberar o acesso à sua conta.',
+        'Você receberá um aviso quando puder entrar no sistema.',
+        '',
+      ].join('\n'),
+      html: [
+        `<p>Olá${stored.user.name ? `, <strong>${stored.user.name}</strong>` : ''}!</p>`,
+        `<p>Seu e-mail foi confirmado com sucesso.</p>`,
+        `<p><strong>Aguarde um administrador liberar o acesso</strong> à sua conta.</p>`,
+        `<p>Você receberá um aviso quando puder entrar no sistema.</p>`,
+      ].join(''),
+    });
+
+    await this.auditService.log({
+      userId: stored.userId,
+      action: 'auth.verify-email',
+      resource: 'user',
+      resourceId: stored.userId,
+    });
+
+    return {
+      verified: true,
+      email: stored.user.email,
+      message:
+        'E-mail confirmado. Bem-vindo! Aguarde um administrador liberar o acesso.',
+    };
+  }
+
+  async resendVerification(email: string) {
+    const user = await this.authRepository.findUserByEmail(email.toLowerCase());
+    // Resposta genérica para não vazar existência de conta
+    if (!user || user.emailVerifiedAt) {
+      return {
+        ok: true,
+        message: 'Se o e-mail existir e ainda não estiver confirmado, enviaremos um novo link.',
+      };
+    }
+
+    const verify = await this.issueEmailVerification(user.id, user.email);
+    return {
+      ok: true,
+      message: 'Se o e-mail existir e ainda não estiver confirmado, enviaremos um novo link.',
+      ...(env.NODE_ENV !== 'production' && verify.devUrl ? { devVerificationUrl: verify.devUrl } : {}),
+    };
+  }
+
+  async forgotPassword(input: ForgotPasswordInput) {
+    const user = await this.authRepository.findUserByEmail(input.email.toLowerCase());
+    if (!user || !user.isActive) {
+      return {
+        ok: true,
+        message: 'Se o e-mail existir, enviaremos instruções para redefinir a senha.',
+      };
+    }
+
+    await this.authRepository.invalidateAuthTokens(user.id, AuthTokenType.PASSWORD_RESET);
+    const rawToken = randomBytes(32).toString('hex');
+    const expiresAt = new Date(Date.now() + 60 * 60 * 1000);
+    await this.authRepository.createAuthToken({
+      userId: user.id,
+      type: AuthTokenType.PASSWORD_RESET,
+      tokenHash: hashToken(rawToken),
+      expiresAt,
+    });
+
+    const resetUrl = `${env.FRONTEND_URL.replace(/\/$/, '')}/reset-password?token=${rawToken}`;
+    await this.mailService.send({
+      to: user.email,
+      subject: 'Redefinição de senha',
+      text: `Use este link para redefinir sua senha (válido por 1 hora):\n\n${resetUrl}\n`,
+      html: `<p>Use este link para redefinir sua senha (válido por 1 hora):</p><p><a href="${resetUrl}">${resetUrl}</a></p>`,
+    });
+
+    return {
+      ok: true,
+      message: 'Se o e-mail existir, enviaremos instruções para redefinir a senha.',
+      ...(env.NODE_ENV !== 'production' ? { devResetUrl: resetUrl } : {}),
+    };
+  }
+
+  async resetPassword(input: ResetPasswordInput) {
+    const tokenHash = hashToken(input.token);
+    const stored = await this.authRepository.findValidAuthToken(
+      tokenHash,
+      AuthTokenType.PASSWORD_RESET,
+    );
+    if (!stored) {
+      throw new ValidationError('Link de redefinição inválido ou expirado');
+    }
+
+    const passwordHash = await bcrypt.hash(input.password, 10);
+    await this.authRepository.markAuthTokenUsed(stored.id);
+    await this.authRepository.updatePassword(stored.userId, passwordHash);
+    await this.authRepository.revokeAllUserTokens(stored.userId);
+
+    await this.auditService.log({
+      userId: stored.userId,
+      action: 'auth.reset-password',
+      resource: 'user',
+      resourceId: stored.userId,
+    });
+
+    return { ok: true, message: 'Senha atualizada. Faça login com a nova senha.' };
+  }
+
   async validateAccessToken(payload: {
     sub: string;
     tokenVersion: number;
@@ -252,6 +440,39 @@ export class AuthService {
     const user = await this.authRepository.findUserById(payload.sub);
     if (!user || !user.isActive) return false;
     return user.tokenVersion === payload.tokenVersion;
+  }
+
+  private async issueEmailVerification(userId: string, email: string) {
+    await this.authRepository.invalidateAuthTokens(userId, AuthTokenType.EMAIL_VERIFY);
+    const rawToken = randomBytes(32).toString('hex');
+    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+    await this.authRepository.createAuthToken({
+      userId,
+      type: AuthTokenType.EMAIL_VERIFY,
+      tokenHash: hashToken(rawToken),
+      expiresAt,
+    });
+
+    const verifyUrl = `${env.FRONTEND_URL.replace(/\/$/, '')}/verify-email?token=${rawToken}`;
+    await this.mailService.send({
+      to: email,
+      subject: 'Confirme seu e-mail',
+      text: [
+        'Confirme seu e-mail clicando no link (válido por 24h):',
+        '',
+        verifyUrl,
+        '',
+        'Depois da confirmação, um administrador precisará liberar o acesso à sua conta.',
+        '',
+      ].join('\n'),
+      html: [
+        `<p>Confirme seu e-mail clicando no link (válido por 24h):</p>`,
+        `<p><a href="${verifyUrl}">${verifyUrl}</a></p>`,
+        `<p>Depois da confirmação, um administrador precisará liberar o acesso à sua conta.</p>`,
+      ].join(''),
+    });
+
+    return { token: rawToken, devUrl: verifyUrl };
   }
 
   private async issueTokens(user: {
@@ -312,7 +533,13 @@ export class AuthService {
   }
 
   private sanitizeUser(
-    user: { id: string; email: string; name: string; isActive: boolean },
+    user: {
+      id: string;
+      email: string;
+      name: string;
+      isActive: boolean;
+      emailVerifiedAt?: Date | null;
+    },
     role: Role,
     tenantId: string,
   ) {
@@ -321,6 +548,7 @@ export class AuthService {
       email: user.email,
       name: user.name,
       isActive: user.isActive,
+      emailVerified: Boolean(user.emailVerifiedAt),
       role,
       tenantId,
     };

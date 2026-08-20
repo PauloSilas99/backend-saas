@@ -1,5 +1,5 @@
 import { inject, injectable } from 'tsyringe';
-import { PrismaClient, Role } from '@prisma/client';
+import { AuthTokenType, PrismaClient, Role } from '@prisma/client';
 
 @injectable()
 export class AuthRepository {
@@ -33,9 +33,12 @@ export class AuthRepository {
     name: string;
     email: string;
     passwordHash: string;
+    whatsapp: string;
     tenantName: string;
     tenantSlug: string;
     role: Role;
+    /** Se true, e-mail já entra como confirmado (fluxo sem SMTP). */
+    emailVerified?: boolean;
   }) {
     return this.prisma.$transaction(async (tx) => {
       const tenant = await tx.tenant.create({
@@ -50,6 +53,9 @@ export class AuthRepository {
           name: data.name,
           email: data.email,
           passwordHash: data.passwordHash,
+          whatsapp: data.whatsapp,
+          emailVerifiedAt: data.emailVerified ? new Date() : null,
+          isActive: false,
         },
       });
 
@@ -58,6 +64,7 @@ export class AuthRepository {
           userId: user.id,
           tenantId: tenant.id,
           role: data.role,
+          isActive: false,
         },
       });
 
@@ -124,5 +131,61 @@ export class AuthRepository {
         data: { tokenVersion: { increment: 1 } },
       }),
     ]);
+  }
+
+  invalidateAuthTokens(userId: string, type: AuthTokenType) {
+    return this.prisma.authToken.updateMany({
+      where: { userId, type, usedAt: null },
+      data: { usedAt: new Date() },
+    });
+  }
+
+  createAuthToken(data: {
+    userId: string;
+    type: AuthTokenType;
+    tokenHash: string;
+    expiresAt: Date;
+  }) {
+    return this.prisma.authToken.create({ data });
+  }
+
+  findValidAuthToken(tokenHash: string, type: AuthTokenType) {
+    return this.prisma.authToken.findFirst({
+      where: {
+        tokenHash,
+        type,
+        usedAt: null,
+        expiresAt: { gt: new Date() },
+      },
+      include: { user: true },
+    });
+  }
+
+  markAuthTokenUsed(id: string) {
+    return this.prisma.authToken.update({
+      where: { id },
+      data: { usedAt: new Date() },
+    });
+  }
+
+  markEmailVerified(userId: string) {
+    return this.prisma.user.update({
+      where: { id: userId },
+      data: { emailVerifiedAt: new Date() },
+    });
+  }
+
+  updatePassword(userId: string, passwordHash: string) {
+    return this.prisma.user.update({
+      where: { id: userId },
+      data: { passwordHash, tokenVersion: { increment: 1 } },
+    });
+  }
+
+  updateProfile(userId: string, data: { name?: string }) {
+    return this.prisma.user.update({
+      where: { id: userId },
+      data,
+    });
   }
 }

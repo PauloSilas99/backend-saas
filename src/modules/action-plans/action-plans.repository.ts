@@ -292,19 +292,25 @@ export class ActionPlansRepository {
     });
   }
 
-  /** Registros com pelo menos uma coluna/campo preenchido (exclui linhas vazias da importação). */
+  /**
+   * Contagem rápida de linhas ativas (não deletadas).
+   * Antes iterava até 2000 linhas + fieldValues só para filtrar vazias — isso
+   * tornava GET /primary e GET /rows extremamente lentos.
+   * Linhas em branco continuam sendo tratadas no FE (KPIs) e em softDeleteBlankRows.
+   */
   async countFilledPlanRows(
     actionPlanId: string,
     tenantId: string,
     scopeResponsibleId?: string,
   ) {
-    const rows = await this.iteratePlanRowsForAnalytics(
-      actionPlanId,
-      tenantId,
-      2000,
-      scopeResponsibleId,
-    );
-    return rows.filter((row) => !isBlankPlanRow(row)).length;
+    return this.prisma.actionPlanRow.count({
+      where: {
+        actionPlanId,
+        deletedAt: null,
+        actionPlan: { tenantId },
+        ...(scopeResponsibleId ? { responsibleId: scopeResponsibleId } : {}),
+      },
+    });
   }
 
   softDeleteRows(ids: string[]) {
@@ -404,20 +410,21 @@ export class ActionPlansRepository {
     };
 
     const skip = (query.page - 1) * query.pageSize;
-    const rawItems = await this.prisma.actionPlanRow.findMany({
-      where,
-      include: {
-        responsible: { select: { id: true, name: true, email: true } },
-        unit: true,
-        fieldValues: { include: { column: true } },
-      },
-      orderBy: [{ createdAt: 'desc' }],
-      skip,
-      take: query.pageSize,
-    });
-    const total = await this.countFilledPlanRows(actionPlanId, tenantId, scopeResponsibleId);
-
-    const items = rawItems.filter((row) => !isBlankPlanRow(row));
+    const [items, total] = await Promise.all([
+      this.prisma.actionPlanRow.findMany({
+        where,
+        include: {
+          responsible: { select: { id: true, name: true, email: true } },
+          unit: true,
+          fieldValues: { include: { column: true } },
+        },
+        orderBy: [{ createdAt: 'desc' }],
+        skip,
+        take: query.pageSize,
+      }),
+      // Contagem barata (mesmo filtro). Sem segundo full-scan de fieldValues.
+      this.prisma.actionPlanRow.count({ where }),
+    ]);
 
     return { items, total };
   }

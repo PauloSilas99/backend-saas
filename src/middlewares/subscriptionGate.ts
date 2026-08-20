@@ -1,6 +1,6 @@
 import { NextFunction, Request, Response } from 'express';
 import { container } from 'tsyringe';
-import { SubscriptionStatus } from '@prisma/client';
+import { Role, SubscriptionStatus } from '@prisma/client';
 import { ForbiddenError, UnauthorizedError } from '@shared/errors/AppError';
 import { BillingService } from '@modules/billing/billing.service';
 
@@ -17,6 +17,11 @@ export async function subscriptionGate(
   try {
     if (!req.user) {
       throw new UnauthorizedError();
+    }
+
+    if (req.user.role === Role.PLATFORM_ADMIN) {
+      next();
+      return;
     }
 
     const billingService = container.resolve(BillingService);

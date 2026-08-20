@@ -94,34 +94,52 @@ async function main() {
 
   const admin = await prisma.user.upsert({
     where: { email: adminEmail },
-    update: { passwordHash: adminHash, name: adminName, isActive: true },
+    update: {
+      passwordHash: adminHash,
+      name: adminName,
+      isActive: true,
+      emailVerifiedAt: new Date(),
+    },
     create: {
       email: adminEmail,
       passwordHash: adminHash,
       name: adminName,
       isActive: true,
+      emailVerifiedAt: new Date(),
     },
   });
 
   const gerente = await prisma.user.upsert({
     where: { email: gerenteEmail },
-    update: { passwordHash: gerenteHash, name: 'Gerente Demo', isActive: true },
+    update: {
+      passwordHash: gerenteHash,
+      name: 'Gerente Demo',
+      isActive: true,
+      emailVerifiedAt: new Date(),
+    },
     create: {
       email: gerenteEmail,
       passwordHash: gerenteHash,
       name: 'Gerente Demo',
       isActive: true,
+      emailVerifiedAt: new Date(),
     },
   });
 
   const gestor = await prisma.user.upsert({
     where: { email: aprovadorEmail },
-    update: { passwordHash: aprovadorHash, name: 'Gestor Aprovador', isActive: true },
+    update: {
+      passwordHash: aprovadorHash,
+      name: 'Gestor Aprovador',
+      isActive: true,
+      emailVerifiedAt: new Date(),
+    },
     create: {
       email: aprovadorEmail,
       passwordHash: aprovadorHash,
       name: 'Gestor Aprovador',
       isActive: true,
+      emailVerifiedAt: new Date(),
     },
   });
 
@@ -131,12 +149,14 @@ async function main() {
       passwordHash: operacionalHash,
       name: 'Operacional Demo',
       isActive: true,
+      emailVerifiedAt: new Date(),
     },
     create: {
       email: operacionalEmail,
       passwordHash: operacionalHash,
       name: 'Operacional Demo',
       isActive: true,
+      emailVerifiedAt: new Date(),
     },
   });
 

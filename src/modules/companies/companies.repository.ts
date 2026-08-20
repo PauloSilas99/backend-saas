@@ -56,6 +56,22 @@ export class CompaniesRepository {
           role: data.role,
         },
       });
+
+      const starterPlan = await tx.plan.findFirst({
+        where: { code: 'starter', isActive: true },
+      });
+      if (starterPlan) {
+        await tx.subscription.create({
+          data: {
+            tenantId: tenant.id,
+            planId: starterPlan.id,
+            status: 'TRIALING',
+            currentPeriodStart: new Date(),
+            currentPeriodEnd: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000),
+          },
+        });
+      }
+
       return tx.tenant.findUniqueOrThrow({
         where: { id: tenant.id },
         include: {

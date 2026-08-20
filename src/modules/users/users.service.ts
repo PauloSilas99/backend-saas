@@ -1,11 +1,13 @@
 import { inject, injectable } from 'tsyringe';
 import { Role } from '@prisma/client';
+import { env } from '@config/env';
 import {
   ConflictError,
   ForbiddenError,
   NotFoundError,
 } from '@shared/errors/AppError';
 import { AuditService } from '@shared/audit/audit.service';
+import { MailService } from '@shared/mail/mail.service';
 import { AuthUser } from '@/types/auth';
 import {
   canAssignRole,
@@ -23,11 +25,28 @@ export class UsersService {
   constructor(
     @inject(UsersRepository) private readonly usersRepository: UsersRepository,
     @inject(AuditService) private readonly auditService: AuditService,
+    @inject(MailService) private readonly mailService: MailService,
   ) {}
 
   async list(actor: AuthUser, q?: string) {
     if (isPlatformAdmin(actor)) {
-      throw new ForbiddenError('Admin da plataforma não lista usuários operacionais');
+      const users = await this.usersRepository.listAll(q);
+      return users.map((user) => ({
+        id: user.id,
+        email: user.email,
+        name: user.name,
+        whatsapp: user.whatsapp ?? null,
+        isActive: user.isActive,
+        emailVerified: Boolean(user.emailVerifiedAt),
+        createdAt: user.createdAt,
+        memberships: user.memberships.map((m) => ({
+          id: m.id,
+          role: m.role,
+          tenantId: m.tenantId,
+          tenantName: m.tenant.name,
+          isActive: m.isActive,
+        })),
+      }));
     }
 
     // Typeahead for managers/operacional selecting responsible
@@ -159,6 +178,23 @@ export class UsersService {
   }
 
   async remove(actor: AuthUser, userId: string, empresaId?: string) {
+    if (isPlatformAdmin(actor)) {
+      if (actor.id === userId) {
+        throw new ForbiddenError('Não é possível excluir a própria conta de admin');
+      }
+      const existing = await this.usersRepository.findUserById(userId);
+      if (!existing) throw new NotFoundError('Usuário não encontrado');
+
+      await this.usersRepository.hardDeleteUser(userId, actor.id);
+      await this.auditService.log({
+        userId: actor.id,
+        action: 'users.hard-delete',
+        resource: 'user',
+        resourceId: userId,
+      });
+      return { id: userId, deleted: true, hard: true };
+    }
+
     if (!canManageUsers(actor)) {
       throw new ForbiddenError();
     }
@@ -184,6 +220,57 @@ export class UsersService {
     return { id: userId, deleted: true };
   }
 
+  async setActive(actor: AuthUser, userId: string, isActive: boolean) {
+    if (!isPlatformAdmin(actor)) {
+      throw new ForbiddenError('Apenas admin da plataforma');
+    }
+    if (actor.id === userId && !isActive) {
+      throw new ForbiddenError('Não é possível desativar a própria conta');
+    }
+    const existing = await this.usersRepository.findUserById(userId);
+    if (!existing) throw new NotFoundError('Usuário não encontrado');
+
+    const wasInactive = !existing.isActive;
+    await this.usersRepository.updateUser(userId, { isActive });
+    if (!isActive) {
+      await this.usersRepository.deactivateAllMemberships(userId);
+      await this.usersRepository.bumpTokenVersion(userId);
+    } else {
+      await this.usersRepository.reactivatePrimaryMemberships(userId);
+      if (wasInactive) {
+        const loginUrl = `${env.FRONTEND_URL.replace(/\/$/, '')}/login`;
+        await this.mailService.send({
+          to: existing.email,
+          subject: 'Acesso liberado',
+          text: [
+            `Olá${existing.name ? `, ${existing.name}` : ''}!`,
+            '',
+            'Um administrador liberou o acesso à sua conta.',
+            `Você já pode entrar: ${loginUrl}`,
+            '',
+          ].join('\n'),
+          html: [
+            `<p>Olá${existing.name ? `, <strong>${existing.name}</strong>` : ''}!</p>`,
+            `<p>Um administrador <strong>liberou o acesso</strong> à sua conta.</p>`,
+            `<p><a href="${loginUrl}">Entrar no sistema</a></p>`,
+          ].join(''),
+        });
+      }
+    }
+
+    await this.auditService.log({
+      userId: actor.id,
+      action: isActive ? 'users.activate' : 'users.deactivate',
+      resource: 'user',
+      resourceId: userId,
+    });
+
+    return {
+      id: userId,
+      isActive,
+    };
+  }
+
   async removeMembership(actor: AuthUser, membershipId: string) {
     if (!canManageUsers(actor)) {
       throw new ForbiddenError();
@@ -198,7 +285,24 @@ export class UsersService {
 
   async getById(actor: AuthUser, userId: string) {
     if (isPlatformAdmin(actor)) {
-      throw new ForbiddenError();
+      const user = await this.usersRepository.findUserById(userId);
+      if (!user) throw new NotFoundError('Usuário não encontrado');
+      return {
+        id: user.id,
+        email: user.email,
+        name: user.name,
+        whatsapp: user.whatsapp ?? null,
+        isActive: user.isActive,
+        emailVerified: Boolean(user.emailVerifiedAt),
+        createdAt: user.createdAt,
+        memberships: user.memberships.map((m) => ({
+          id: m.id,
+          role: m.role,
+          tenantId: m.tenantId,
+          tenantName: m.tenant.name,
+          isActive: m.isActive,
+        })),
+      };
     }
 
     if (isOperacional(actor) && actor.id !== userId) {

@@ -79,4 +79,14 @@ export class UsersController {
       next(error);
     }
   }
+
+  async setActive(req: Request, res: Response, next: NextFunction) {
+    try {
+      const service = container.resolve(UsersService);
+      const data = await service.setActive(req.user!, req.params.id, Boolean(req.body.isActive));
+      res.json({ success: true, data });
+    } catch (error) {
+      next(error);
+    }
+  }
 }

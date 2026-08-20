@@ -48,6 +48,16 @@ import {
   type SheetImportJobResult,
   type SheetJobProgress,
 } from './sheet-import.jobs';
+import {
+  SHEET_META_CACHE_TTL_SEC,
+  cacheGet,
+  cacheSet,
+  cacheTryLock,
+  cacheUnlock,
+  invalidateSheetRowCountCache,
+  sheetJobLockKey,
+  sheetRowCountCacheKey,
+} from '@config/redis-cache';
 
 const IMPORT_FROM_PARSE_BATCH = 500;
 const IMPORT_ISSUE_CAP = 100;
@@ -89,7 +99,7 @@ export class SheetsService {
   async getById(actor: AuthUser, id: string) {
     const plan = await this.plansService.getById(actor, id);
     const columns = await this.columnsRepo.listActive(id);
-    const rowCount = await this.plansRepo.countFilledPlanRows(id, actor.tenantId);
+    const rowCount = await this.getCachedRowCount(actor.tenantId, id);
     return { ...plan, columns, rowCount, rows: plan.rows ?? [] };
   }
 
@@ -101,7 +111,8 @@ export class SheetsService {
     const plan = await this.plansRepo.findPlanMeta(id, actor.tenantId);
     if (!plan) throw new NotFoundError('Planilha não encontrada');
     const columns = await this.columnsRepo.listActive(id);
-    const rowCount = await this.plansRepo.countFilledPlanRows(id, actor.tenantId);
+    const scopeResponsibleId = isOperacional(actor) ? actor.id : undefined;
+    const rowCount = await this.getCachedRowCount(actor.tenantId, id, scopeResponsibleId);
     return {
       ...plan,
       columns,
@@ -133,6 +144,7 @@ export class SheetsService {
       actor.tenantId,
       scopeResponsibleId,
     );
+    await invalidateSheetRowCountCache(actor.tenantId, sheetId);
     return { deleted };
   }
 
@@ -291,6 +303,7 @@ export class SheetsService {
       }
     }
 
+    await invalidateSheetRowCountCache(actor.tenantId, sheetId);
     return this.getSummary(actor, sheetId);
   }
 
@@ -508,6 +521,7 @@ export class SheetsService {
       }
     }
 
+    await invalidateSheetRowCountCache(tenantId, plan.id);
     return {
       planId: plan.id,
       imported,
@@ -579,6 +593,14 @@ export class SheetsService {
     file: { path: string; originalname: string },
     onProgress?: (progress: SheetJobProgress) => void | Promise<void>,
   ) {
+    const lockKey = sheetJobLockKey(actor.tenantId);
+    const locked = await cacheTryLock(lockKey, 15 * 60);
+    if (!locked) {
+      throw new ValidationError(
+        'Já existe um processamento de planilha em andamento para esta empresa. Aguarde a conclusão.',
+      );
+    }
+
     try {
       await onProgress?.({ current: 0, total: 0, phase: 'parse' });
 
@@ -604,6 +626,7 @@ export class SheetsService {
       });
       return toParseJobResult(stored, sampleRows);
     } finally {
+      await cacheUnlock(lockKey);
       try {
         const fs = await import('fs');
         if (file.path) fs.unlinkSync(file.path);
@@ -618,16 +641,31 @@ export class SheetsService {
     input: ImportFromParseInput,
     onProgress?: (progress: SheetJobProgress) => void | Promise<void>,
   ) {
-    await onProgress?.({ current: 0, total: 0, phase: 'import' });
-    const result = await this.importFromParse(actor, input, (current, total) => {
-      void onProgress?.({ current, total, phase: 'import' });
-    });
-    await onProgress?.({
-      current: result.imported + result.skipped,
-      total: result.imported + result.skipped,
-      phase: 'import',
-    });
-    return result;
+    const lockKey = sheetJobLockKey(actor.tenantId);
+    const locked = await cacheTryLock(lockKey, 30 * 60);
+    if (!locked) {
+      throw new ValidationError(
+        'Já existe um processamento de planilha em andamento para esta empresa. Aguarde a conclusão.',
+      );
+    }
+
+    try {
+      await onProgress?.({ current: 0, total: 0, phase: 'import' });
+      const result = await this.importFromParse(actor, input, (current, total) => {
+        void onProgress?.({ current, total, phase: 'import' });
+      });
+      if (result.planId) {
+        await invalidateSheetRowCountCache(actor.tenantId, result.planId);
+      }
+      await onProgress?.({
+        current: result.imported + result.skipped,
+        total: result.imported + result.skipped,
+        phase: 'import',
+      });
+      return result;
+    } finally {
+      await cacheUnlock(lockKey);
+    }
   }
 
   async importFromParse(
@@ -950,6 +988,27 @@ export class SheetsService {
     const plan = await this.plansRepo.findPlan(sheetId, actor.tenantId);
     if (!plan) throw new NotFoundError('Planilha não encontrada');
     return plan;
+  }
+
+  /** rowCount com cache Redis curto; fallback transparente se Redis cair. */
+  private async getCachedRowCount(
+    tenantId: string,
+    planId: string,
+    scopeResponsibleId?: string,
+  ): Promise<number> {
+    const key = sheetRowCountCacheKey(tenantId, planId, scopeResponsibleId);
+    const cached = await cacheGet(key);
+    if (cached != null && cached !== '') {
+      const n = Number(cached);
+      if (Number.isFinite(n) && n >= 0) return n;
+    }
+    const rowCount = await this.plansRepo.countFilledPlanRows(
+      planId,
+      tenantId,
+      scopeResponsibleId,
+    );
+    await cacheSet(key, String(rowCount), SHEET_META_CACHE_TTL_SEC);
+    return rowCount;
   }
 }
 

@@ -86,6 +86,7 @@ export class UsersRepository {
           name: data.name,
           email: data.email,
           passwordHash: data.passwordHash,
+          emailVerifiedAt: new Date(),
         },
       });
 
@@ -117,6 +118,122 @@ export class UsersRepository {
 
   findByEmail(email: string) {
     return this.prisma.user.findUnique({ where: { email } });
+  }
+
+  listAll(q?: string) {
+    return this.prisma.user.findMany({
+      where: q
+        ? {
+            OR: [
+              { name: { contains: q, mode: 'insensitive' } },
+              { email: { contains: q, mode: 'insensitive' } },
+            ],
+          }
+        : undefined,
+      include: {
+        memberships: {
+          include: { tenant: { select: { id: true, name: true } } },
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+  }
+
+  findUserById(id: string) {
+    return this.prisma.user.findUnique({
+      where: { id },
+      include: {
+        memberships: {
+          include: { tenant: { select: { id: true, name: true } } },
+        },
+      },
+    });
+  }
+
+  hardDeleteUser(userId: string, reassignToUserId: string) {
+    return this.prisma.$transaction(async (tx) => {
+      // Referências opcionais → null
+      await tx.actionPlanRow.updateMany({
+        where: { responsibleId: userId },
+        data: { responsibleId: null },
+      });
+      await tx.actionHistory.updateMany({
+        where: { actorId: userId },
+        data: { actorId: null },
+      });
+      await tx.actionColumnHistory.updateMany({
+        where: { actorId: userId },
+        data: { actorId: null },
+      });
+      await tx.actionColumn.updateMany({
+        where: { deletedById: userId },
+        data: { deletedById: null },
+      });
+      await tx.risk.updateMany({
+        where: { ownerId: userId },
+        data: { ownerId: null },
+      });
+      await tx.actionControl.updateMany({
+        where: { responsibleId: userId },
+        data: { responsibleId: null },
+      });
+      await tx.calendarActivity.updateMany({
+        where: { assigneeId: userId },
+        data: { assigneeId: null },
+      });
+      await tx.auditLog.updateMany({
+        where: { userId },
+        data: { userId: null },
+      });
+
+      // Referências obrigatórias → reatribuir ao admin que executa a exclusão
+      await tx.actionPlan.updateMany({
+        where: { ownerId: userId },
+        data: { ownerId: reassignToUserId },
+      });
+      await tx.import.updateMany({
+        where: { createdById: userId },
+        data: { createdById: reassignToUserId },
+      });
+      await tx.calendarActivity.updateMany({
+        where: { createdById: userId },
+        data: { createdById: reassignToUserId },
+      });
+      await tx.calendarOverride.updateMany({
+        where: { createdById: userId },
+        data: { createdById: reassignToUserId },
+      });
+
+      // memberships / refreshTokens / authTokens / overlays → onDelete Cascade
+      await tx.user.delete({ where: { id: userId } });
+    });
+  }
+
+  deactivateAllMemberships(userId: string) {
+    return this.prisma.membership.updateMany({
+      where: { userId },
+      data: { isActive: false },
+    });
+  }
+
+  reactivatePrimaryMemberships(userId: string) {
+    return this.prisma.membership.updateMany({
+      where: { userId },
+      data: { isActive: true },
+    });
+  }
+
+  bumpTokenVersion(userId: string) {
+    return this.prisma.$transaction([
+      this.prisma.refreshToken.updateMany({
+        where: { userId, revokedAt: null },
+        data: { revokedAt: new Date() },
+      }),
+      this.prisma.user.update({
+        where: { id: userId },
+        data: { tokenVersion: { increment: 1 } },
+      }),
+    ]);
   }
 }
 
