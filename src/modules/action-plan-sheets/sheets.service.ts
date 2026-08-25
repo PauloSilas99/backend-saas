@@ -20,6 +20,7 @@ import { isBlankPlanRow } from '@shared/helpers/plan-row-blank';
 import { ActionPlansRepository } from '@modules/action-plans/action-plans.repository';
 import { ActionPlansService } from '@modules/action-plans/action-plans.service';
 import { ColumnsRepository } from '@modules/columns/columns.repository';
+import { CreateColumnInput, UpdateColumnInput } from '@modules/columns/columns.schemas';
 import { inferSemanticRole, pickUniqueSemanticRoles } from '@modules/columns/column-semantics';
 import {
   BulkSheetInput,
@@ -29,12 +30,14 @@ import {
   ImportSheetJsonInput,
   SaveMyChartsInput,
 } from '@modules/action-plans/action-plans.schemas';
-import { CreateColumnInput } from '@modules/columns/columns.schemas';
-import { normalizeDateValue } from './parse/sheet-cells';
+import { normalizeDateValue, padRow } from './parse/sheet-cells';
+import { headersFromRow } from './parse/spreadsheet';
 import { parseDueDateString, pickDueDateFromNamedValues } from './parse/due-date';
 import { assertAllowedExtension, assertRealFileType } from './parse/file-validator';
 import {
   deleteSheetParse,
+  hasPhysicalStaging,
+  iteratePhysicalParseRows,
   iterateSheetParseRows,
   loadSheetParseMeta,
   PARSE_SAMPLE_ROWS,
@@ -215,7 +218,7 @@ export class SheetsService {
     actor: AuthUser,
     sheetId: string,
     columnId: string,
-    input: { label?: string; required?: boolean; options?: string[]; sortOrder?: number },
+    input: UpdateColumnInput,
   ) {
     await this.assertSheet(actor, sheetId);
     if (!canManageColumns(actor)) throw new ForbiddenError();
@@ -285,6 +288,7 @@ export class SheetsService {
         if (existing && !existing.deletedAt) {
           await this.columnsRepo.update(col.id!, {
             label: col.label,
+            fieldType: col.fieldType,
             required: col.required,
             options: col.options,
             sortOrder: col.sortOrder ?? index,
@@ -294,6 +298,7 @@ export class SheetsService {
             deletedAt: null,
             isActive: true,
             label: col.label,
+            fieldType: col.fieldType,
             required: col.required,
             options: col.options,
             sortOrder: col.sortOrder ?? index,
@@ -568,7 +573,7 @@ export class SheetsService {
   }
 
   /**
-   * Recebe o arquivo, devolve jobId na hora e lê em background (JSONL incremental).
+   * Recebe o arquivo, devolve jobId na hora e extrai células em background (JSONL).
    */
   async enqueueParseUpload(
     actor: AuthUser,
@@ -836,7 +841,47 @@ export class SheetsService {
     };
 
     const sourcePath = resolveSheetParseSourcePath(meta);
-    if (sourcePath) {
+    if (hasPhysicalStaging(meta)) {
+      let batch: ReturnType<typeof toImportRow>[] = [];
+      let dataRows = 0;
+      const width = meta.columnCount || columns.length;
+      for await (const physical of iteratePhysicalParseRows(
+        actor.tenantId,
+        input.parseId,
+        IMPORT_FROM_PARSE_BATCH,
+      )) {
+        for (const row of physical) {
+          if (row.line < headerRowIndex) continue;
+          if (row.line === headerRowIndex) {
+            const headers = headersFromRow(row.values);
+            headerIndexByName = new Map(headers.map((header, index) => [header, index]));
+            continue;
+          }
+          if (quotaReached) continue;
+          if (!row.values.some((cell) => cell.trim())) continue;
+          if (dataRows >= PRODUCT_LIMITS.maxRowsPerTenant) {
+            fileTruncated = true;
+            continue;
+          }
+          dataRows += 1;
+          globalLine += 1;
+          const mapped = mapValues(padRow(row.values, width));
+          const importRow = toImportRow(mapped, row.line);
+          if (isImportRowBlank(importRow)) {
+            skipped += 1;
+            continue;
+          }
+          batch.push(importRow);
+          if (batch.length >= IMPORT_FROM_PARSE_BATCH) {
+            const chunk = batch;
+            batch = [];
+            await flush(chunk, meta.totalRows);
+          }
+        }
+      }
+      await flush(batch, meta.totalRows);
+      onProgress?.(imported + skipped, meta.totalRows);
+    } else if (sourcePath) {
       let batch: ReturnType<typeof toImportRow>[] = [];
       const streamed = await streamSheetParseSource(
         meta,

@@ -1,6 +1,6 @@
 /**
- * Tetos do produto para caber em Neon/Render Free sem degradar a UX paginada.
- * Valores podem ser sobrescritos por env em produção paga.
+ * Tetos do produto: o volume de dados é linhas/colunas.
+ * O MB do upload é só o envelope Office (XML/estilos), extraído e descartado no job.
  */
 function intEnv(name: string, fallback: number): number {
   const raw = process.env[name];
@@ -13,7 +13,8 @@ export const PRODUCT_LIMITS = {
   /** Linhas por empresa (inclui soft-deleted — ocupam disco). */
   maxRowsPerTenant: intEnv('MAX_ROWS_PER_TENANT', 15_000),
   maxColumnsPerSheet: intEnv('MAX_COLUMNS_PER_SHEET', 80),
-  maxUploadMb: intEnv('MAX_UPLOAD_MB', 10),
+  /** Envelope .xlsx/.xls/.csv. Não é o teto de registros. */
+  maxUploadMb: intEnv('MAX_UPLOAD_MB', 50),
   maxJsonBodyMb: 1,
   maxPageSize: 100,
   importJsonChunkRows: 120,
@@ -45,7 +46,7 @@ export function columnQuotaMessage(limit = PRODUCT_LIMITS.maxColumnsPerSheet): s
 }
 
 export function uploadQuotaMessage(limitMb = PRODUCT_LIMITS.maxUploadMb): string {
-  return `Arquivo acima de ${limitMb} MB. Envie um recorte menor da planilha.`;
+  return `Arquivo acima de ${limitMb} MB. Compacte a planilha ou envie só a aba de dados.`;
 }
 
 export function importJobInProgressMessage(): string {

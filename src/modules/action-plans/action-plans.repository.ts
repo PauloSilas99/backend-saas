@@ -130,20 +130,12 @@ export class ActionPlansRepository {
   }) {
     return this.prisma.$transaction(async (tx) => {
       await setTransactionTenant(tx, input.tenantId);
-      const created: Array<{ id: string }> = [];
-
-      for (let i = 0; i < input.rows.length; i += 1) {
-        const row = await tx.actionPlanRow.create({
-          data: {
-            ...input.rows[i],
-            cells: buildCells(input.values[i], input.columnByKey),
-          },
-          select: { id: true },
-        });
-        created.push(row);
-      }
-
-      return created;
+      const data = input.rows.map((row, i) => ({
+        ...row,
+        cells: buildCells(input.values[i], input.columnByKey),
+      }));
+      const result = await tx.actionPlanRow.createMany({ data });
+      return Array.from({ length: result.count }, () => ({ id: '' }));
     });
   }
 

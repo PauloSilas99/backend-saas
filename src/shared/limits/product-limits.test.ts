@@ -9,10 +9,11 @@ import {
 } from './product-limits';
 
 describe('PRODUCT_LIMITS', () => {
-  it('keeps free-tier ceilings that fit Neon/Render', () => {
+  it('keeps data-volume ceilings and a larger Office envelope cap', () => {
     expect(PRODUCT_LIMITS.maxRowsPerTenant).toBeLessThanOrEqual(20_000);
     expect(PRODUCT_LIMITS.maxColumnsPerSheet).toBeLessThanOrEqual(80);
-    expect(PRODUCT_LIMITS.maxUploadMb).toBeLessThanOrEqual(10);
+    expect(PRODUCT_LIMITS.maxUploadMb).toBeGreaterThanOrEqual(10);
+    expect(PRODUCT_LIMITS.maxUploadMb).toBeLessThanOrEqual(80);
     expect(PRODUCT_LIMITS.maxJsonBodyMb).toBe(1);
     expect(PRODUCT_LIMITS.poolMax).toBeLessThanOrEqual(10);
     expect(MAX_JSON_BODY_BYTES).toBe(1024 * 1024);
@@ -21,7 +22,7 @@ describe('PRODUCT_LIMITS', () => {
   it('explains quotas in Portuguese for the user', () => {
     expect(rowQuotaMessage(15_000)).toMatch(/15[.\s,]000 registros/);
     expect(columnQuotaMessage(80)).toMatch(/80 colunas/);
-    expect(uploadQuotaMessage(10)).toMatch(/10 MB/);
+    expect(uploadQuotaMessage(50)).toMatch(/50 MB/);
     expect(importTruncatedMessage(15_000)).toMatch(/15[.\s,]000/);
   });
 });

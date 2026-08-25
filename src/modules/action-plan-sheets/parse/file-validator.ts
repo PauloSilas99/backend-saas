@@ -5,7 +5,8 @@ import yauzl from 'yauzl';
 import { ValidationError } from '@shared/errors/AppError';
 import {
   FILE_TYPE_SAMPLE_BYTES,
-  MAX_XLSX_UNCOMPRESSED_BYTES,
+  MAX_XLSX_DATA_ENTRY_BYTES,
+  MAX_XLSX_ZIP_RATIO,
 } from './constants';
 
 const ALLOWED_MIME_TYPES = new Set([
@@ -67,6 +68,27 @@ export async function assertRealFileType(filePath: string, originalName: string)
   return detected.mime;
 }
 
+function isXlsxDataEntry(name: string): boolean {
+  const normalized = name.replace(/\\/g, '/');
+  if (/xl\/sharedStrings\.xml$/i.test(normalized)) return true;
+  if (/xl\/worksheets\/_rels\//i.test(normalized)) return false;
+  return /xl\/worksheets\/[^/]+\.xml$/i.test(normalized);
+}
+
+function isZipBombEntry(entry: yauzl.Entry): boolean {
+  const compressed = Math.max(entry.compressedSize || 1, 1);
+  const uncompressed = entry.uncompressedSize || 0;
+  if (uncompressed <= 0) return false;
+  const ratio = uncompressed / compressed;
+  if (uncompressed > MAX_XLSX_DATA_ENTRY_BYTES && ratio > MAX_XLSX_ZIP_RATIO) return true;
+  if (uncompressed > 512 * 1024 * 1024) return true;
+  return false;
+}
+
+/**
+ * Não soma o zip inteiro (estilos/imagens incham o Excel).
+ * Só recusa bomb em entradas de dados que de fato serão lidas.
+ */
 function assertXlsxNotZipBomb(filePath: string): Promise<void> {
   return new Promise((resolve, reject) => {
     yauzl.open(filePath, { lazyEntries: true }, (openError, zipfile) => {
@@ -75,17 +97,10 @@ function assertXlsxNotZipBomb(filePath: string): Promise<void> {
         return;
       }
 
-      let uncompressedTotal = 0;
-
       zipfile.on('entry', (entry) => {
-        uncompressedTotal += entry.uncompressedSize;
-        if (uncompressedTotal > MAX_XLSX_UNCOMPRESSED_BYTES) {
+        if (isXlsxDataEntry(entry.fileName) && isZipBombEntry(entry)) {
           zipfile.close();
-          reject(
-            new ValidationError(
-              `Arquivo xlsx excede o limite descomprimido de ${MAX_XLSX_UNCOMPRESSED_BYTES / (1024 * 1024)}MB.`,
-            ),
-          );
+          reject(new ValidationError('Arquivo xlsx recusado: compactação anômala na aba de dados.'));
           return;
         }
         zipfile.readEntry();

@@ -5,14 +5,19 @@ import { randomUUID } from 'crypto';
 import { env } from '@config/env';
 import { NotFoundError, ValidationError } from '@shared/errors/AppError';
 import {
+  extractPhysicalRows,
   headersFromRow,
-  peekSpreadsheetFile,
+  peekFromPhysicalRows,
+  PEEK_PHYSICAL_ROWS,
   recordsFromPeek,
   streamSpreadsheetFile,
+  type PhysicalSheetRow,
   type SpreadsheetPeekRow,
   type SpreadsheetStreamHandlers,
   type SpreadsheetStreamOptions,
 } from './parse/spreadsheet';
+import { rowHasData } from './parse/sheet-cells';
+import { MAX_IMPORT_ROWS } from './parse/constants';
 
 export const PARSE_SAMPLE_ROWS = 50;
 export const PARSE_DISTINCT_CAP = 80;
@@ -27,7 +32,7 @@ export type SheetParseMeta = {
   sheetName: string;
   headers: string[];
   emptyColumns: string[];
-  /** 0 enquanto só a amostra foi lida; o total sai na 2ª passagem. */
+  /** Linhas de dados após o cabeçalho sugerido (teto MAX_IMPORT_ROWS). */
   totalRows: number;
   createdAt: string;
   distincts: Record<string, string[]>;
@@ -36,6 +41,8 @@ export type SheetParseMeta = {
   peekRows: SpreadsheetPeekRow[];
   columnCount: number;
   sourceFileName: string;
+  /** true quando data.jsonl tem linhas físicas { line, values }. */
+  physicalStaging?: boolean;
 };
 
 function parsesRoot(): string {
@@ -60,14 +67,6 @@ export function ensureSheetParseDir(tenantId: string, parseId?: string): string 
     : path.join(parsesRoot(), tenantId);
   fs.mkdirSync(dir, { recursive: true });
   return dir;
-}
-
-function sourceExtFromName(fileName: string, fallbackPath: string): string {
-  const fromName = path.extname(fileName).toLowerCase();
-  if (SOURCE_EXTS.includes(fromName as (typeof SOURCE_EXTS)[number])) return fromName;
-  const fromPath = path.extname(fallbackPath).toLowerCase();
-  if (SOURCE_EXTS.includes(fromPath as (typeof SOURCE_EXTS)[number])) return fromPath;
-  return '.xlsx';
 }
 
 function distinctsFromRecords(
@@ -103,8 +102,7 @@ function distinctsFromRecords(
 }
 
 /**
- * Passagem 1: copia o arquivo original e lê só o começo (cabeçalho + exemplos).
- * Não percorre nem materializa o restante das linhas.
+ * Passagem única: extrai células para JSONL e descarta o envelope Office.
  */
 export async function saveSheetParseFromFile(input: {
   tenantId: string;
@@ -114,18 +112,60 @@ export async function saveSheetParseFromFile(input: {
 }): Promise<SheetParseMeta> {
   const parseId = randomUUID();
   const dir = ensureSheetParseDir(input.tenantId, parseId);
-  const sourceFileName = `source${sourceExtFromName(input.fileName, input.filePath)}`;
-  const dest = path.join(dir, sourceFileName);
+  const jsonlPath = dataPath(input.tenantId, parseId);
+  const peekRows: SpreadsheetPeekRow[] = [];
+  let written = 0;
 
   try {
-    await fs.promises.copyFile(input.filePath, dest);
-    const peek = await peekSpreadsheetFile(dest);
-    input.onProgress?.(peek.rows.length);
+    const out = fs.createWriteStream(jsonlPath, { encoding: 'utf8' });
+    let writeError: Error | null = null;
+    out.on('error', (err) => {
+      writeError = err;
+    });
+    const writeLine = async (row: PhysicalSheetRow) => {
+      if (writeError) throw writeError;
+      const ok = out.write(`${JSON.stringify({ line: row.line, values: row.values })}\n`);
+      if (!ok) {
+        await new Promise<void>((resolve) => out.once('drain', resolve));
+      }
+      if (writeError) throw writeError;
+    };
 
+    const extracted = await extractPhysicalRows(input.filePath, async (row) => {
+      await writeLine(row);
+      written += 1;
+      if (peekRows.length < PEEK_PHYSICAL_ROWS) peekRows.push(row);
+      if (written === 1 || written % 200 === 0) input.onProgress?.(written);
+    });
+
+    await new Promise<void>((resolve, reject) => {
+      out.end(() => resolve());
+      out.once('error', reject);
+    });
+
+    if (peekRows.length === 0) {
+      throw new ValidationError('Planilha vazia');
+    }
+
+    const peek = peekFromPhysicalRows(extracted.sheetName, peekRows);
     const { headers, records } = recordsFromPeek(peek.rows, peek.suggestedHeaderRow);
     if (headers.length === 0) {
       throw new ValidationError('Cabeçalho vazio ou inválido');
     }
+
+    let totalRows = 0;
+    let truncated = extracted.truncated;
+    for await (const batch of iteratePhysicalJsonlFile(jsonlPath, 500)) {
+      for (const row of batch) {
+        if (row.line <= peek.suggestedHeaderRow) continue;
+        if (!rowHasData(row.values)) continue;
+        totalRows += 1;
+        if (totalRows >= MAX_IMPORT_ROWS) {
+          truncated = true;
+        }
+      }
+    }
+    if (totalRows > MAX_IMPORT_ROWS) totalRows = MAX_IMPORT_ROWS;
 
     const { distincts, emptyColumns } = distinctsFromRecords(headers, records);
 
@@ -136,17 +176,19 @@ export async function saveSheetParseFromFile(input: {
       sheetName: peek.sheetName,
       headers,
       emptyColumns,
-      totalRows: 0,
+      totalRows,
       createdAt: new Date().toISOString(),
       distincts,
-      truncated: false,
+      truncated,
       suggestedHeaderRow: peek.suggestedHeaderRow,
       peekRows: peek.rows,
-      columnCount: peek.columnCount,
-      sourceFileName,
+      columnCount: peek.columnCount || extracted.columnCount,
+      sourceFileName: '',
+      physicalStaging: true,
     };
 
     await fs.promises.writeFile(metaPath(input.tenantId, parseId), JSON.stringify(meta), 'utf8');
+    input.onProgress?.(totalRows);
     return meta;
   } catch (error) {
     await fs.promises.rm(dir, { recursive: true, force: true }).catch(() => undefined);
@@ -207,6 +249,7 @@ function normalizeMeta(raw: SheetParseMeta & { rows?: Record<string, string>[] }
     peekRows,
     columnCount: raw.columnCount ?? headers.length,
     sourceFileName: raw.sourceFileName ?? '',
+    physicalStaging: raw.physicalStaging ?? false,
   };
 }
 
@@ -316,7 +359,51 @@ export async function readSheetParseDistincts(
   return [...values];
 }
 
-/** Legado: JSONL gerado por parses antigos. A importação atual lê o arquivo original. */
+export function parsePhysicalJsonlLine(line: string): PhysicalSheetRow | null {
+  const trimmed = line.trim();
+  if (!trimmed) return null;
+  try {
+    const raw = JSON.parse(trimmed) as { line?: unknown; values?: unknown };
+    if (!Array.isArray(raw.values) || typeof raw.line !== 'number') return null;
+    return { line: raw.line, values: raw.values.map((cell) => String(cell ?? '')) };
+  } catch {
+    return null;
+  }
+}
+
+export async function* iteratePhysicalJsonlFile(
+  filePath: string,
+  batchSize = 500,
+): AsyncGenerator<PhysicalSheetRow[]> {
+  if (!fs.existsSync(filePath)) return;
+  let batch: PhysicalSheetRow[] = [];
+  const stream = fs.createReadStream(filePath, { encoding: 'utf8' });
+  const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
+  for await (const line of rl) {
+    const row = parsePhysicalJsonlLine(line);
+    if (!row) continue;
+    batch.push(row);
+    if (batch.length >= batchSize) {
+      yield batch;
+      batch = [];
+    }
+  }
+  if (batch.length > 0) yield batch;
+}
+
+export function hasPhysicalStaging(meta: SheetParseMeta): boolean {
+  return Boolean(meta.physicalStaging) && fs.existsSync(dataPath(meta.tenantId, meta.parseId));
+}
+
+export async function* iteratePhysicalParseRows(
+  tenantId: string,
+  parseId: string,
+  batchSize = 500,
+): AsyncGenerator<PhysicalSheetRow[]> {
+  yield* iteratePhysicalJsonlFile(dataPath(tenantId, parseId), batchSize);
+}
+
+/** Legado: JSONL nomeado gerado por parses antigos. */
 export async function* iterateSheetParseRows(
   tenantId: string,
   parseId: string,

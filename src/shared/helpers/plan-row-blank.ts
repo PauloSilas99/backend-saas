@@ -1,4 +1,5 @@
 import { Prisma } from '@prisma/client';
+import { isTrivialCellValue } from './trivial-cell';
 
 type FieldValue = {
   value: Prisma.JsonValue | null;
@@ -29,26 +30,26 @@ function jsonToString(value: Prisma.JsonValue | null | undefined): string {
 /** Linha sem conteúdo útil nas colunas (título automático da importação não conta). */
 export function isBlankPlanRow(row: PlanRowBlankInput): boolean {
   if (row.dueDate) return false;
-  if (row.description?.trim()) return false;
-  if (row.responsibleName?.trim()) return false;
-  if (row.unitName?.trim()) return false;
+  if (row.description?.trim() && !isTrivialCellValue(row.description)) return false;
+  if (row.responsibleName?.trim() && !isTrivialCellValue(row.responsibleName)) return false;
+  if (row.unitName?.trim() && !isTrivialCellValue(row.unitName)) return false;
 
   const hasFieldValue = (row.fieldValues ?? []).some((fv) => {
     const name = fv.column?.name?.trim().toLowerCase() ?? '';
     if (AUTO_COLUMN_NAMES.has(name)) return false;
-    return jsonToString(fv.value).length > 0;
+    return !isTrivialCellValue(jsonToString(fv.value));
   });
   if (hasFieldValue) return false;
 
   if (row.cells && typeof row.cells === 'object' && !Array.isArray(row.cells)) {
     const hasCell = Object.entries(row.cells).some(([columnId, value]) => {
       if (row.autoColumnIds?.has(columnId)) return false;
-      return jsonToString(value as Prisma.JsonValue).length > 0;
+      return !isTrivialCellValue(jsonToString(value as Prisma.JsonValue));
     });
     if (hasCell) return false;
   }
 
   const title = row.title?.trim() ?? '';
-  if (!title) return true;
+  if (!title || isTrivialCellValue(title)) return true;
   return PLACEHOLDER_TITLE.test(title);
 }

@@ -1,3 +1,5 @@
+import { isTrivialCellValue } from '@shared/helpers/trivial-cell';
+
 /** Conversão estável de células Excel/CSV — sempre por valor, nunca por array esparso. */
 
 const EXCEL_SERIAL_MIN = 20_000;
@@ -83,7 +85,7 @@ export function padRow(values: string[], columnCount: number): string[] {
 }
 
 export function rowHasData(values: string[]): boolean {
-  return values.some((cell) => cell.trim());
+  return values.some((cell) => !isTrivialCellValue(cell));
 }
 
 /**
@@ -96,13 +98,13 @@ export function detectHeaderRowIndex(rows: string[][]): number {
   const limit = Math.min(rows.length, 15);
 
   for (let i = 0; i < limit; i += 1) {
-    const filled = (rows[i] ?? []).map((cell) => cell.trim()).filter(Boolean);
+    const filled = (rows[i] ?? []).map((cell) => cell.trim()).filter((cell) => !isTrivialCellValue(cell));
     if (filled.length < 2) continue;
 
     const unique = new Set(filled.map((cell) => cell.toLowerCase()));
     const numeric = filled.filter((cell) => /^[\d.,/\-:]+$/.test(cell)).length;
     const textRatio = (filled.length - numeric) / filled.length;
-    const nextFilled = (rows[i + 1] ?? []).filter((cell) => cell.trim()).length;
+    const nextFilled = (rows[i + 1] ?? []).filter((cell) => !isTrivialCellValue(cell)).length;
     const score = unique.size * 3 + textRatio * 4 + Math.min(nextFilled, 30) * 0.15;
 
     if (score > bestScore) {

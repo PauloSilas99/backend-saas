@@ -1,16 +1,16 @@
 import fs from 'fs';
 import path from 'path';
 import readline from 'readline';
-import ExcelJS from 'exceljs';
 import * as XLSX from 'xlsx';
 import { ValidationError } from '@shared/errors/AppError';
-import { MAX_IMPORT_ROWS, MAX_TRAILING_EMPTY_ROWS } from './constants';
+import { MAX_IMPORT_ROWS, MAX_PHYSICAL_EXTRACT_ROWS, MAX_TRAILING_EMPTY_ROWS } from './constants';
 import {
   cellToString,
   detectHeaderRowIndex,
   padRow,
   rowHasData,
 } from './sheet-cells';
+import { iterateXlsxDataRows } from './xlsx-sheet-stream';
 
 export const PEEK_PHYSICAL_ROWS = 20;
 
@@ -90,33 +90,10 @@ export function headersFromRow(values: string[]): string[] {
 function rowFromValues(headers: string[], values: string[]): Record<string, string> | null {
   const padded = padRow(values, headers.length);
   const rawData: Record<string, string> = {};
-  let hasData = false;
   headers.forEach((header, index) => {
-    const value = padded[index] ?? '';
-    rawData[header] = value;
-    if (value) hasData = true;
+    rawData[header] = padded[index] ?? '';
   });
-  return hasData ? rawData : null;
-}
-
-function denseExcelRow(row: ExcelJS.Row, columnCount: number): string[] {
-  const sparse = Array.isArray(row.values) ? (row.values as unknown[]) : [];
-  const width = Math.max(columnCount, row.cellCount || 0, Math.max(sparse.length - 1, 0), 1);
-  const values: string[] = [];
-  for (let col = 1; col <= width; col += 1) {
-    let raw: unknown;
-    if (typeof row.getCell === 'function') {
-      try {
-        raw = row.getCell(col).value;
-      } catch {
-        raw = sparse[col];
-      }
-    } else {
-      raw = sparse[col];
-    }
-    values.push(cellToString(raw));
-  }
-  return columnCount > 0 ? padRow(values, columnCount) : values;
+  return rowHasData(padded) ? rawData : null;
 }
 
 /** Monta registros a partir da amostra (peek), com a linha de cabeçalho escolhida. */
@@ -196,34 +173,20 @@ export async function peekSpreadsheetFile(filePath: string): Promise<Spreadsheet
 }
 
 async function peekXlsx(filePath: string): Promise<SpreadsheetPeek> {
-  const workbookReader = new ExcelJS.stream.xlsx.WorkbookReader(filePath, {
-    entries: 'emit',
-    sharedStrings: 'cache',
-    hyperlinks: 'ignore',
-    styles: 'ignore',
-    worksheets: 'emit',
-  });
-
+  const rows: SpreadsheetPeekRow[] = [];
+  let sheetName = 'Planilha 1';
   try {
-    for await (const worksheetReader of workbookReader) {
-      const rows: SpreadsheetPeekRow[] = [];
-      let line = 0;
-      for await (const row of worksheetReader) {
-        line += 1;
-        rows.push({ line, values: denseExcelRow(row, 0) });
-        if (rows.length >= PEEK_PHYSICAL_ROWS) break;
-      }
-      const worksheetName = (worksheetReader as unknown as { name?: string }).name;
-      const name = typeof worksheetName === 'string' ? worksheetName : 'Planilha 1';
-      if (rows.length === 0) throw new ValidationError('Planilha vazia');
-      return finalizePeek(name, rows);
+    for await (const row of iterateXlsxDataRows(filePath)) {
+      if (row.sheetName) sheetName = row.sheetName;
+      rows.push({ line: row.line, values: row.values });
+      if (rows.length >= PEEK_PHYSICAL_ROWS) break;
     }
-
-    throw new ValidationError('Planilha vazia');
-  } finally {
-    const stream = (workbookReader as { stream?: { destroy?: () => void } }).stream;
-    stream?.destroy?.();
+  } catch (error) {
+    if (error instanceof ValidationError) throw error;
+    throw new ValidationError('Arquivo xlsx corrompido ou ilegível');
   }
+  if (rows.length === 0) throw new ValidationError('Planilha vazia');
+  return finalizePeek(sheetName, rows);
 }
 
 async function peekCsv(filePath: string): Promise<SpreadsheetPeek> {
@@ -311,64 +274,49 @@ async function streamXlsx(
   columnCountHint?: number,
 ): Promise<SpreadsheetStreamResult> {
   try {
-    const workbookReader = new ExcelJS.stream.xlsx.WorkbookReader(filePath, {
-      entries: 'emit',
-      sharedStrings: 'cache',
-      hyperlinks: 'ignore',
-      styles: 'ignore',
-      worksheets: 'emit',
-    });
+    let headers: string[] = [];
+    let columnCount = columnCountHint ?? 0;
+    let totalRows = 0;
+    let emptyStreak = 0;
+    let truncated = false;
 
-    for await (const worksheetReader of workbookReader) {
-      let headers: string[] = [];
-      let columnCount = columnCountHint ?? 0;
-      let lineNumber = 0;
-      let totalRows = 0;
-      let emptyStreak = 0;
-      let truncated = false;
+    for await (const row of iterateXlsxDataRows(filePath)) {
+      if (row.line < headerRowIndex) continue;
+      const values = columnCount > 0 ? padRow(row.values, columnCount) : row.values;
 
-      for await (const row of worksheetReader) {
-        lineNumber += 1;
-        if (lineNumber < headerRowIndex) continue;
-
-        const values = denseExcelRow(row, columnCount);
-
-        if (lineNumber === headerRowIndex) {
-          headers = headersFromRow(values);
-          if (headers.length === 0 || !headers.some((h) => h.trim())) {
-            throw new ValidationError('Cabeçalho vazio ou inválido');
-          }
-          columnCount = headers.length;
-          handlers.onHeaders(headers);
-          continue;
+      if (row.line === headerRowIndex) {
+        headers = headersFromRow(values);
+        if (headers.length === 0 || !headers.some((h) => h.trim())) {
+          throw new ValidationError('Cabeçalho vazio ou inválido');
         }
+        columnCount = headers.length;
+        handlers.onHeaders(headers);
+        continue;
+      }
 
-        const rawData = rowFromValues(headers, values);
-        if (rawData) {
-          if (totalRows >= MAX_IMPORT_ROWS) {
-            truncated = true;
-            break;
-          }
-          emptyStreak = 0;
-          totalRows += 1;
-          await handlers.onRow(rawData, lineNumber, padRow(values, columnCount));
-        } else if (totalRows > 0) {
-          emptyStreak += 1;
-          if (emptyStreak >= MAX_TRAILING_EMPTY_ROWS) break;
+      const rawData = rowFromValues(headers, values);
+      if (rawData) {
+        if (totalRows >= MAX_IMPORT_ROWS) {
+          truncated = true;
+          break;
         }
+        emptyStreak = 0;
+        totalRows += 1;
+        await handlers.onRow(rawData, row.line, padRow(values, columnCount));
+      } else if (totalRows > 0) {
+        emptyStreak += 1;
+        if (emptyStreak >= MAX_TRAILING_EMPTY_ROWS) break;
       }
-
-      if (headers.length === 0) {
-        throw new ValidationError('Cabeçalho vazio ou inválido');
-      }
-      if (totalRows === 0) {
-        throw new ValidationError('Planilha sem linhas de dados além do cabeçalho');
-      }
-
-      return { headers, totalRows, truncated };
     }
 
-    throw new ValidationError('Planilha vazia');
+    if (headers.length === 0) {
+      throw new ValidationError('Cabeçalho vazio ou inválido');
+    }
+    if (totalRows === 0) {
+      throw new ValidationError('Planilha sem linhas de dados além do cabeçalho');
+    }
+
+    return { headers, totalRows, truncated };
   } catch (error) {
     if (error instanceof ValidationError) throw error;
     throw new ValidationError('Arquivo xlsx corrompido ou ilegível');
@@ -502,6 +450,155 @@ async function streamWithSheetJs(
   }
 
   return { headers, totalRows, truncated };
+}
+
+export type PhysicalSheetRow = {
+  line: number;
+  values: string[];
+};
+
+export type PhysicalExtractResult = {
+  sheetName: string;
+  rowsWritten: number;
+  columnCount: number;
+  truncated: boolean;
+};
+
+/**
+ * Extrai só células da aba de dados (sem estilos/imagens).
+ * O .xlsx original pode ser apagado depois desta passagem.
+ */
+export async function extractPhysicalRows(
+  filePath: string,
+  onRow: (row: PhysicalSheetRow) => void | Promise<void>,
+): Promise<PhysicalExtractResult> {
+  const ext = path.extname(filePath).toLowerCase();
+  if (ext === '.csv') return extractCsvPhysical(filePath, onRow);
+  if (ext === '.xlsx') return extractXlsxPhysical(filePath, onRow);
+  return extractSheetJsPhysical(filePath, onRow);
+}
+
+async function emitPhysicalRow(
+  state: { emitted: number; emptyStreak: number; columnCount: number; truncated: boolean },
+  line: number,
+  values: string[],
+  onRow: (row: PhysicalSheetRow) => void | Promise<void>,
+): Promise<'ok' | 'stop'> {
+  state.columnCount = Math.max(state.columnCount, values.length);
+  const empty = !rowHasData(values);
+  if (empty) {
+    state.emptyStreak += 1;
+    if (state.emitted >= PEEK_PHYSICAL_ROWS) {
+      if (state.emptyStreak >= MAX_TRAILING_EMPTY_ROWS) return 'stop';
+      return 'ok';
+    }
+  } else {
+    state.emptyStreak = 0;
+  }
+  if (state.emitted >= MAX_PHYSICAL_EXTRACT_ROWS) {
+    state.truncated = true;
+    return 'stop';
+  }
+  await onRow({ line, values });
+  state.emitted += 1;
+  return 'ok';
+}
+
+async function extractXlsxPhysical(
+  filePath: string,
+  onRow: (row: PhysicalSheetRow) => void | Promise<void>,
+): Promise<PhysicalExtractResult> {
+  const state = { emitted: 0, emptyStreak: 0, columnCount: 0, truncated: false };
+  let sheetName = 'Planilha 1';
+  try {
+    for await (const row of iterateXlsxDataRows(filePath)) {
+      if (row.sheetName) sheetName = row.sheetName;
+      const next = await emitPhysicalRow(state, row.line, row.values, onRow);
+      if (next === 'stop') break;
+    }
+  } catch (error) {
+    if (error instanceof ValidationError) throw error;
+    throw new ValidationError('Arquivo xlsx corrompido ou ilegível');
+  }
+
+  if (state.emitted === 0) throw new ValidationError('Planilha vazia');
+  return {
+    sheetName,
+    rowsWritten: state.emitted,
+    columnCount: state.columnCount,
+    truncated: state.truncated,
+  };
+}
+
+async function extractCsvPhysical(
+  filePath: string,
+  onRow: (row: PhysicalSheetRow) => void | Promise<void>,
+): Promise<PhysicalExtractResult> {
+  const stream = fs.createReadStream(filePath, { encoding: 'utf8' });
+  const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
+  const state = { emitted: 0, emptyStreak: 0, columnCount: 0, truncated: false };
+  let line = 0;
+  let delimiter = ',';
+
+  try {
+    for await (const rawLine of rl) {
+      let text = rawLine;
+      if (line === 0 && text.charCodeAt(0) === 0xfeff) text = text.slice(1);
+      line += 1;
+      if (line === 1) delimiter = detectCsvDelimiter(text);
+      const next = await emitPhysicalRow(state, line, parseCsvLine(text, delimiter), onRow);
+      if (next === 'stop') break;
+    }
+  } finally {
+    rl.close();
+    stream.destroy();
+  }
+
+  if (state.emitted === 0) throw new ValidationError('Planilha vazia');
+  return {
+    sheetName: 'Planilha 1',
+    rowsWritten: state.emitted,
+    columnCount: state.columnCount,
+    truncated: state.truncated,
+  };
+}
+
+async function extractSheetJsPhysical(
+  filePath: string,
+  onRow: (row: PhysicalSheetRow) => void | Promise<void>,
+): Promise<PhysicalExtractResult> {
+  const workbook = XLSX.readFile(filePath, { cellDates: true });
+  const sheetName = workbook.SheetNames[0];
+  if (!sheetName) throw new ValidationError('Planilha vazia');
+  const sheet = workbook.Sheets[sheetName];
+  const matrix = XLSX.utils.sheet_to_json<(string | number | Date | null)[]>(sheet, {
+    header: 1,
+    defval: '',
+    blankrows: true,
+    raw: false,
+  });
+  const state = { emitted: 0, emptyStreak: 0, columnCount: 0, truncated: false };
+
+  for (let i = 0; i < matrix.length; i += 1) {
+    const values = (matrix[i] ?? []).map((cell) => cellToString(cell));
+    const next = await emitPhysicalRow(state, i + 1, values, onRow);
+    if (next === 'stop') break;
+  }
+
+  if (state.emitted === 0) throw new ValidationError('Planilha vazia');
+  return {
+    sheetName,
+    rowsWritten: state.emitted,
+    columnCount: state.columnCount,
+    truncated: state.truncated,
+  };
+}
+
+export function peekFromPhysicalRows(
+  sheetName: string,
+  rows: SpreadsheetPeekRow[],
+): SpreadsheetPeek {
+  return finalizePeek(sheetName, rows);
 }
 
 export { detectHeaderRowIndex, rowHasData };

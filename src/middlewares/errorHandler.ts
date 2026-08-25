@@ -1,6 +1,7 @@
 import { NextFunction, Request, Response } from 'express';
 import { Prisma } from '@prisma/client';
 import { AppError, ConflictError } from '@shared/errors/AppError';
+import { PRODUCT_LIMITS } from '@shared/limits/product-limits';
 import { logger } from '@shared/logger';
 import { ZodError } from 'zod';
 
@@ -63,8 +64,7 @@ export function errorHandler(
       success: false,
       error: {
         code: 'PAYLOAD_TOO_LARGE',
-        message:
-          'Arquivo ou payload acima do limite deste ambiente (1 MB de JSON ou 10 MB de planilha). Importe pelo upload de arquivo.',
+        message: `Arquivo ou payload acima do limite deste ambiente (${PRODUCT_LIMITS.maxJsonBodyMb} MB de JSON ou ${PRODUCT_LIMITS.maxUploadMb} MB de planilha). Envie o arquivo pelo upload direto, não como JSON.`,
       },
     });
     return;

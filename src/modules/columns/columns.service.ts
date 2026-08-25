@@ -81,6 +81,7 @@ export class ColumnsService {
 
     const updated = await this.columnsRepository.update(id, {
       label: input.label,
+      fieldType: input.fieldType,
       required: input.required,
       options: input.options,
       sortOrder: input.sortOrder,
