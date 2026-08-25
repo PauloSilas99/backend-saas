@@ -5,6 +5,7 @@ import helmet from 'helmet';
 import swaggerUi from 'swagger-ui-express';
 import pinoHttp from 'pino-http';
 import { env } from '@config/env';
+import { PRODUCT_LIMITS } from '@shared/limits/product-limits';
 import { swaggerSpec } from '@config/app';
 import { registerDependencies } from '@shared/container';
 import { errorHandler } from '@middlewares/errorHandler';
@@ -23,8 +24,8 @@ app.use(
     credentials: true,
   }),
 );
-app.use(express.json({ limit: '50mb' }));
-app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+app.use(express.json({ limit: `${PRODUCT_LIMITS.maxJsonBodyMb}mb` }));
+app.use(express.urlencoded({ extended: true, limit: `${PRODUCT_LIMITS.maxJsonBodyMb}mb` }));
 app.use(
   pinoHttp({
     logger,

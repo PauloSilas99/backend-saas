@@ -9,8 +9,6 @@ import { CompaniesRepository } from '@modules/companies/companies.repository';
 import { CompaniesService } from '@modules/companies/companies.service';
 import { ActionPlansRepository } from '@modules/action-plans/action-plans.repository';
 import { ActionPlansService } from '@modules/action-plans/action-plans.service';
-import { ImportsRepository } from '@modules/imports/imports.repository';
-import { ImportsService } from '@modules/imports/imports.service';
 import { AnalyticsRepository } from '@modules/analytics/analytics.repository';
 import { AnalyticsService } from '@modules/analytics/analytics.service';
 import { BillingRepository } from '@modules/billing/billing.repository';
@@ -24,6 +22,7 @@ import { CalendarRepository } from '@modules/calendar/calendar.repository';
 import { CalendarService } from '@modules/calendar/calendar.service';
 import { AuditService } from '@shared/audit/audit.service';
 import { TenantPolicyService } from '@shared/policies/tenant-policy.service';
+import { TenantQuotaService } from '@shared/limits/tenant-quota.service';
 import { MailService } from '@shared/mail/mail.service';
 import { createBillingProvider } from '@modules/billing/providers';
 
@@ -32,6 +31,7 @@ export function registerDependencies(): void {
   container.registerSingleton(AuditService);
   container.registerSingleton(TenantPolicyService);
   container.registerSingleton(MailService);
+  container.registerSingleton(TenantQuotaService);
   container.registerSingleton(AuthRepository);
   container.registerSingleton(AuthService);
   container.registerSingleton(UsersRepository);
@@ -40,8 +40,6 @@ export function registerDependencies(): void {
   container.registerSingleton(CompaniesService);
   container.registerSingleton(ActionPlansRepository);
   container.registerSingleton(ActionPlansService);
-  container.registerSingleton(ImportsRepository);
-  container.registerSingleton(ImportsService);
   container.registerSingleton(AnalyticsRepository);
   container.registerSingleton(AnalyticsService);
   container.registerSingleton(BillingRepository);

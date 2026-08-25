@@ -117,8 +117,14 @@ export function canManageUsers(actor: AuthUser | { role: Role }): boolean {
   return actor.role === Role.GERENTE;
 }
 
+/** Gerente da empresa ou admin da plataforma (equipe em Empresas). */
+export function canManageCompanyTeam(actor: AuthUser | { role: Role }): boolean {
+  return actor.role === Role.GERENTE || actor.role === Role.PLATFORM_ADMIN;
+}
+
 export function canAssignRole(actorRole: Role, targetRole: Role): boolean {
+  if (targetRole === Role.PLATFORM_ADMIN) return false;
   if (actorRole === Role.PLATFORM_ADMIN) return true;
   if (actorRole !== Role.GERENTE) return false;
-  return targetRole !== Role.PLATFORM_ADMIN;
+  return true;
 }

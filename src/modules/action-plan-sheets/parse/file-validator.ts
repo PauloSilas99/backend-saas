@@ -6,7 +6,7 @@ import { ValidationError } from '@shared/errors/AppError';
 import {
   FILE_TYPE_SAMPLE_BYTES,
   MAX_XLSX_UNCOMPRESSED_BYTES,
-} from './imports.constants';
+} from './constants';
 
 const ALLOWED_MIME_TYPES = new Set([
   'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',

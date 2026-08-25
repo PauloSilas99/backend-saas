@@ -1,5 +1,5 @@
 import { inject, injectable } from 'tsyringe';
-import { ActionStatus, Role } from '@prisma/client';
+import { ActionStatus, Prisma, Role } from '@prisma/client';
 import { ForbiddenError, NotFoundError, ValidationError } from '@shared/errors/AppError';
 import { AuditService } from '@shared/audit/audit.service';
 import { AuthUser } from '@/types/auth';
@@ -8,12 +8,12 @@ import {
   canCreateActions,
   canDeleteOrDuplicateAction,
   canEditAnyAction,
-  canViewAllCompanyActions,
   isOperacional,
   isPlatformAdmin,
   resolveCompletionTargetStatus,
 } from '@shared/helpers/rbac';
 import { TenantPolicyService } from '@shared/policies/tenant-policy.service';
+import { TenantQuotaService } from '@shared/limits/tenant-quota.service';
 import { ActionPlansRepository } from './action-plans.repository';
 import {
   ApproveActionInput,
@@ -43,6 +43,8 @@ export class ActionPlansService {
     private readonly actionPlansRepository: ActionPlansRepository,
     @inject(TenantPolicyService)
     private readonly tenantPolicyService: TenantPolicyService,
+    @inject(TenantQuotaService)
+    private readonly tenantQuota: TenantQuotaService,
     @inject(AuditService) private readonly auditService: AuditService,
   ) {}
 
@@ -77,14 +79,6 @@ export class ActionPlansService {
     this.assertNotPlatformAdminContent(actor);
     const plan = await this.actionPlansRepository.findPlan(id, actor.tenantId);
     if (!plan) throw new NotFoundError('Plano de ação não encontrado');
-
-    if (isOperacional(actor)) {
-      return {
-        ...plan,
-        rows: plan.rows.filter((r) => r.responsibleId === actor.id),
-      };
-    }
-
     return plan;
   }
 
@@ -127,8 +121,10 @@ export class ActionPlansService {
       throw new ForbiddenError('Sem permissão para criar ações');
     }
 
-    const plan = await this.actionPlansRepository.findPlan(planId, actor.tenantId);
+    const plan = await this.actionPlansRepository.findPlanMeta(planId, actor.tenantId);
     if (!plan) throw new NotFoundError('Plano de ação não encontrado');
+
+    await this.tenantQuota.assertCanAddRows(actor.tenantId, 1);
 
     const row = await this.actionPlansRepository.createRow({
       id: input.id,
@@ -381,6 +377,8 @@ export class ActionPlansService {
     const row = await this.actionPlansRepository.findRow(rowId, actor.tenantId);
     if (!row) throw new NotFoundError('Ação não encontrada');
 
+    await this.tenantQuota.assertCanAddRows(actor.tenantId, 1);
+
     const copy = await this.actionPlansRepository.duplicateRow(rowId, {
       actionPlan: { connect: { id: row.actionPlanId } },
       title: `${row.title} (cópia)`,
@@ -390,6 +388,7 @@ export class ActionPlansService {
       dueDate: row.dueDate,
       responsibleName: row.responsibleName,
       unitName: row.unitName,
+      cells: (row.cells as Prisma.InputJsonValue) ?? {},
       unit: row.unitId ? { connect: { id: row.unitId } } : undefined,
       responsible: row.responsibleId ? { connect: { id: row.responsibleId } } : undefined,
       externalKey: row.externalKey ? `${row.externalKey}-copy-${Date.now()}` : undefined,
@@ -432,20 +431,6 @@ export class ActionPlansService {
     });
 
     return deleted;
-  }
-
-  async calendar(actor: AuthUser, from: string, to: string) {
-    this.assertNotPlatformAdminContent(actor);
-    const responsibleId = isOperacional(actor) ? actor.id : undefined;
-    if (!canViewAllCompanyActions(actor) && !isOperacional(actor)) {
-      throw new ForbiddenError();
-    }
-    return this.actionPlansRepository.listCalendar(
-      actor.tenantId,
-      new Date(from),
-      new Date(to),
-      responsibleId,
-    );
   }
 
   private async requestOrComplete(

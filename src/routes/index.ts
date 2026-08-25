@@ -1,7 +1,5 @@
 import { Router } from 'express';
-import { prisma } from '@config/database';
-import { env } from '@config/env';
-import { getCacheRedis } from '@config/redis-cache';
+import { probeHealthDeps } from '@shared/health/deps-probe';
 import authRoutes from '@modules/auth/auth.routes';
 import usersRoutes from '@modules/users/users.routes';
 import companiesRoutes from '@modules/companies/companies.routes';
@@ -19,102 +17,34 @@ import empresasRoutes, {
 
 const router = Router();
 
-function redisHostLabel(redisUrl: string): string {
-  try {
-    const u = new URL(redisUrl);
-    return u.hostname || 'redis';
-  } catch {
-    return 'redis';
-  }
-}
-
-router.get('/health', async (_req, res) => {
-  const checkedAt = new Date().toISOString();
-  let database: 'ok' | 'error' = 'ok';
-  let databaseLatencyMs: number | null = null;
-  let databaseSizeBytes: number | null = null;
-  let databaseName: string | null = null;
-
-  /** Plano Free Neon: storage 0.5 GB; compute até 2 CU ≈ 8 GB RAM. */
-  const FREE_STORAGE_LIMIT_BYTES = Math.floor(0.5 * 1024 * 1024 * 1024);
-  const FREE_RAM_LIMIT_MB = 8 * 1024;
-  /** Compute mínimo típico ao acordar (0.25 CU ≈ 1 GB). */
-  const FREE_RAM_ACTIVE_ESTIMATE_MB = 1024;
-
-  try {
-    const started = Date.now();
-    const rows = await prisma.$queryRaw<
-      Array<{ size_bytes: bigint | number; db_name: string }>
-    >`SELECT pg_database_size(current_database())::bigint AS size_bytes, current_database() AS db_name`;
-    databaseLatencyMs = Date.now() - started;
-    const row = rows[0];
-    if (row) {
-      databaseSizeBytes = Number(row.size_bytes);
-      databaseName = row.db_name;
-    }
-  } catch {
-    database = 'error';
-  }
-
-  let redis: 'ok' | 'error' = 'error';
-  let redisLatencyMs: number | null = null;
-  let redisUsedMemoryBytes: number | null = null;
-  let redisUsedMemoryHuman: string | null = null;
-  let redisMaxMemoryBytes: number | null = null;
-  const redisHost = redisHostLabel(env.REDIS_URL);
-
-  try {
-    const client = getCacheRedis();
-    if (client) {
-      const started = Date.now();
-      const pong = await client.ping();
-      redisLatencyMs = Date.now() - started;
-      if (pong === 'PONG') {
-        redis = 'ok';
-        const info = await client.info('memory');
-        const usedMatch = /used_memory:(\d+)/.exec(info);
-        const usedHumanMatch = /used_memory_human:([^\r\n]+)/.exec(info);
-        const maxMatch = /maxmemory:(\d+)/.exec(info);
-        if (usedMatch) redisUsedMemoryBytes = Number(usedMatch[1]);
-        if (usedHumanMatch) redisUsedMemoryHuman = usedHumanMatch[1].trim();
-        if (maxMatch && Number(maxMatch[1]) > 0) {
-          redisMaxMemoryBytes = Number(maxMatch[1]);
-        }
-      }
-    }
-  } catch {
-    redis = 'error';
-  }
-
-  const storagePct =
-    databaseSizeBytes != null
-      ? Math.min(100, Math.round((databaseSizeBytes / FREE_STORAGE_LIMIT_BYTES) * 1000) / 10)
-      : null;
-
-  const status = database === 'ok' ? 'ok' : 'degraded';
-  res.status(database === 'ok' ? 200 : 503).json({
-    success: database === 'ok',
+/** Liveness da API — não acorda Neon nem Redis. */
+router.get('/health', (_req, res) => {
+  res.json({
+    success: true,
     data: {
-      status,
+      status: 'ok',
+      timestamp: new Date().toISOString(),
+      checks: { api: 'ok' },
+    },
+  });
+});
+
+/** SELECT 1 + PING. `?details=1` inclui disco (cacheado) e memória Redis. */
+router.get('/health/deps', async (req, res) => {
+  const details = req.query.details === '1' || req.query.details === 'true';
+  const checkedAt = new Date().toISOString();
+  const checks = await probeHealthDeps(details);
+  const ok = checks.database === 'ok';
+  res.status(ok ? 200 : 503).json({
+    success: ok,
+    data: {
+      status: ok ? 'ok' : 'degraded',
       timestamp: checkedAt,
       checks: {
         api: 'ok',
-        database,
-        databaseLatencyMs,
-        databaseName,
-        databaseSizeBytes,
-        freeStorageLimitBytes: FREE_STORAGE_LIMIT_BYTES,
-        storageUsagePercent: storagePct,
-        freeRamActiveEstimateMb: database === 'ok' ? FREE_RAM_ACTIVE_ESTIMATE_MB : 0,
-        freeRamLimitMb: FREE_RAM_LIMIT_MB,
         provider: 'neon',
         plan: 'free',
-        redis,
-        redisLatencyMs,
-        redisHost,
-        redisUsedMemoryBytes,
-        redisUsedMemoryHuman,
-        redisMaxMemoryBytes,
+        ...checks,
       },
     },
   });

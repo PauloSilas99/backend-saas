@@ -5,12 +5,14 @@ import path from 'path';
 import multer from 'multer';
 import { Role } from '@prisma/client';
 import { env } from '@config/env';
+import { PRODUCT_LIMITS } from '@shared/limits/product-limits';
 import { authenticate } from '@middlewares/authenticate';
 import { roleGuard } from '@middlewares/roleGuard';
 import { subscriptionGate } from '@middlewares/subscriptionGate';
 import { validate } from '@middlewares/validate';
 import {
   bulkSheetSchema,
+  chartSeriesSchema,
   columnsOrderSchema,
   createActionPlanSchema,
   createActionRowSchema,
@@ -19,6 +21,7 @@ import {
   listSheetRowsQuerySchema,
   parseDistinctsQuerySchema,
   resolveActionSchema,
+  saveMyChartsSchema,
   updateActionRowSchema,
 } from '@modules/action-plans/action-plans.schemas';
 import { createColumnSchema, updateColumnSchema } from '@modules/columns/columns.schemas';
@@ -38,7 +41,7 @@ const parseUpload = multer({
       cb(null, `${randomUUID()}${path.extname(file.originalname)}`);
     },
   }),
-  limits: { fileSize: env.UPLOAD_MAX_SIZE_MB * 1024 * 1024 },
+  limits: { fileSize: PRODUCT_LIMITS.maxUploadMb * 1024 * 1024 },
 });
 
 router.use(authenticate, subscriptionGate);
@@ -96,6 +99,20 @@ router.get(
 );
 
 router.get('/:id/analytics', (req, res, next) => controller.getAnalytics(req, res, next));
+
+router.get('/:id/my-charts', (req, res, next) => controller.getMyCharts(req, res, next));
+
+router.put(
+  '/:id/my-charts',
+  validate({ body: saveMyChartsSchema }),
+  (req, res, next) => controller.saveMyCharts(req, res, next),
+);
+
+router.post(
+  '/:id/chart-series',
+  validate({ body: chartSeriesSchema }),
+  (req, res, next) => controller.getChartSeries(req, res, next),
+);
 
 router.delete(
   '/:id/rows/blank',
@@ -160,6 +177,18 @@ router.post(
   '/:id/rows/:rowId/resolve',
   validate({ body: resolveActionSchema }),
   (req, res, next) => controller.resolveRow(req, res, next),
+);
+
+router.post(
+  '/:id/rows/:rowId/duplicate',
+  roleGuard(Role.GERENTE, Role.GESTOR),
+  (req, res, next) => controller.duplicateRow(req, res, next),
+);
+
+router.delete(
+  '/:id/rows/:rowId',
+  roleGuard(Role.GERENTE, Role.GESTOR),
+  (req, res, next) => controller.removeRow(req, res, next),
 );
 
 export default router;

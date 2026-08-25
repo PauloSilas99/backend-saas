@@ -63,34 +63,35 @@ export class AnalyticsRepository {
   }
 
   async getMonthly(scope: AnalyticsScope) {
-    const where = this.buildWhere(scope);
-    const rows = await this.prisma.actionPlanRow.findMany({
-      where,
-      select: { createdAt: true, status: true, completedAt: true },
-    });
+    const tenantId = scope.tenantId;
+    const rows = await this.prisma.$queryRaw<
+      Array<{ month: string; total: number; completed: number }>
+    >`
+      SELECT TO_CHAR(DATE_TRUNC('month', r.created_at), 'YYYY-MM') AS month,
+             COUNT(*)::int AS total,
+             COUNT(*) FILTER (WHERE r.status = 'COMPLETED')::int AS completed
+      FROM action_plan_rows r
+      INNER JOIN action_plans p ON p.id = r.action_plan_id
+      WHERE p.tenant_id = ${tenantId}
+        AND r.deleted_at IS NULL
+        ${scope.responsibleId ? Prisma.sql`AND r.responsible_id = ${scope.responsibleId}` : Prisma.empty}
+        ${scope.unitId ? Prisma.sql`AND r.unit_id = ${scope.unitId}` : Prisma.empty}
+        ${scope.status ? Prisma.sql`AND r.status = ${scope.status}::"ActionStatus"` : Prisma.empty}
+        ${scope.from ? Prisma.sql`AND r.created_at >= ${scope.from}` : Prisma.empty}
+        ${scope.to ? Prisma.sql`AND r.created_at <= ${scope.to}` : Prisma.empty}
+      GROUP BY 1
+      ORDER BY 1
+    `;
 
-    const buckets = new Map<string, { total: number; completed: number }>();
-
-    for (const row of rows) {
-      const date = row.createdAt;
-      const key = `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}`;
-      const current = buckets.get(key) ?? { total: 0, completed: 0 };
-      current.total += 1;
-      if (row.status === ActionStatus.COMPLETED) current.completed += 1;
-      buckets.set(key, current);
-    }
-
-    return Array.from(buckets.entries())
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([month, values]) => ({
-        month,
-        total: values.total,
-        completed: values.completed,
-        adherence:
-          values.total === 0
-            ? 0
-            : Number(((values.completed / values.total) * 100).toFixed(2)),
-      }));
+    return rows.map((row) => ({
+      month: row.month,
+      total: Number(row.total),
+      completed: Number(row.completed),
+      adherence:
+        Number(row.total) === 0
+          ? 0
+          : Number(((Number(row.completed) / Number(row.total)) * 100).toFixed(2)),
+    }));
   }
 
   async getByUnit(scope: AnalyticsScope) {

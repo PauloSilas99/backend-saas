@@ -1,4 +1,5 @@
 import { inject, injectable } from 'tsyringe';
+import fs from 'fs';
 import {
   ActionPriority,
   ActionStatus,
@@ -6,7 +7,7 @@ import {
   ColumnHistoryAction,
   ColumnSemanticRole,
 } from '@prisma/client';
-import { ForbiddenError, NotFoundError, ValidationError } from '@shared/errors/AppError';
+import { ConflictError, ForbiddenError, NotFoundError, QuotaError, ValidationError } from '@shared/errors/AppError';
 import { AuthUser } from '@/types/auth';
 import {
   canCreateActions,
@@ -22,12 +23,16 @@ import { ColumnsRepository } from '@modules/columns/columns.repository';
 import { inferSemanticRole, pickUniqueSemanticRoles } from '@modules/columns/column-semantics';
 import {
   BulkSheetInput,
+  ChartSeriesInput,
   ColumnsOrderInput,
   ImportFromParseInput,
   ImportSheetJsonInput,
+  SaveMyChartsInput,
 } from '@modules/action-plans/action-plans.schemas';
 import { CreateColumnInput } from '@modules/columns/columns.schemas';
-import { normalizeDateValue } from '@modules/imports/sheet-cells';
+import { normalizeDateValue } from './parse/sheet-cells';
+import { parseDueDateString, pickDueDateFromNamedValues } from './parse/due-date';
+import { assertAllowedExtension, assertRealFileType } from './parse/file-validator';
 import {
   deleteSheetParse,
   iterateSheetParseRows,
@@ -44,20 +49,41 @@ import {
   enqueueSheetParseJob,
   getSheetJob,
   toParseJobResult,
-  type SheetJob,
+  type SheetImportIssue,
   type SheetImportJobResult,
+  type SheetJob,
   type SheetJobProgress,
 } from './sheet-import.jobs';
 import {
   SHEET_META_CACHE_TTL_SEC,
+  acquireExclusiveLock,
   cacheGet,
+  cacheGetJson,
   cacheSet,
-  cacheTryLock,
+  cacheSetJson,
   cacheUnlock,
-  invalidateSheetRowCountCache,
+  invalidateSheetCaches,
+  sheetAnalyticsCacheKey,
   sheetJobLockKey,
   sheetRowCountCacheKey,
 } from '@config/redis-cache';
+import { TenantQuotaService } from '@shared/limits/tenant-quota.service';
+import {
+  PRODUCT_LIMITS,
+  columnQuotaMessage,
+  importJobInProgressMessage,
+  importTruncatedMessage,
+  rowQuotaMessage,
+  uploadQuotaMessage,
+} from '@shared/limits/product-limits';
+import type { SheetAnalyticsResult } from '@modules/action-plans/workbook-analytics';
+import {
+  chartsForSheet,
+  mergeSheetCharts,
+  sanitizeUserCharts,
+  type UserChartSlice,
+  type UserChartSpec,
+} from './user-charts';
 
 const IMPORT_FROM_PARSE_BATCH = 500;
 const IMPORT_ISSUE_CAP = 100;
@@ -90,6 +116,7 @@ export class SheetsService {
     @inject(ActionPlansRepository) private readonly plansRepo: ActionPlansRepository,
     @inject(ActionPlansService) private readonly plansService: ActionPlansService,
     @inject(ColumnsRepository) private readonly columnsRepo: ColumnsRepository,
+    @inject(TenantQuotaService) private readonly tenantQuota: TenantQuotaService,
   ) {}
 
   async list(actor: AuthUser) {
@@ -97,10 +124,7 @@ export class SheetsService {
   }
 
   async getById(actor: AuthUser, id: string) {
-    const plan = await this.plansService.getById(actor, id);
-    const columns = await this.columnsRepo.listActive(id);
-    const rowCount = await this.getCachedRowCount(actor.tenantId, id);
-    return { ...plan, columns, rowCount, rows: plan.rows ?? [] };
+    return this.getSummary(actor, id);
   }
 
   /**
@@ -144,7 +168,7 @@ export class SheetsService {
       actor.tenantId,
       scopeResponsibleId,
     );
-    await invalidateSheetRowCountCache(actor.tenantId, sheetId);
+    await invalidateSheetCaches(actor.tenantId, sheetId);
     return { deleted };
   }
 
@@ -176,6 +200,7 @@ export class SheetsService {
   async createColumn(actor: AuthUser, sheetId: string, input: CreateColumnInput) {
     await this.assertSheet(actor, sheetId);
     if (!canManageColumns(actor)) throw new ForbiddenError();
+    await this.tenantQuota.assertCanAddColumns(sheetId, 1);
     const column = await this.columnsRepo.create(actor.tenantId, sheetId, input);
     await this.columnsRepo.addHistory({
       columnId: column.id,
@@ -202,7 +227,9 @@ export class SheetsService {
   async deleteColumn(actor: AuthUser, sheetId: string, columnId: string) {
     await this.assertSheet(actor, sheetId);
     if (!canManageColumns(actor)) throw new ForbiddenError();
-    return this.columnsRepo.softDelete(columnId, actor.id);
+    const deleted = await this.columnsRepo.softDelete(columnId, actor.id);
+    await this.columnsRepo.stripCellKey(sheetId, columnId);
+    return deleted;
   }
 
   async orderColumns(actor: AuthUser, sheetId: string, input: ColumnsOrderInput) {
@@ -220,6 +247,7 @@ export class SheetsService {
     const columns = await this.columnsRepo.listActive(sheetId);
     for (const col of columns) {
       await this.columnsRepo.softDelete(col.id, actor.id, 'reset');
+      await this.columnsRepo.stripCellKey(sheetId, col.id);
     }
     return { reset: columns.length };
   }
@@ -288,22 +316,10 @@ export class SheetsService {
     }
 
     if (input.rows && canCreateActions(actor)) {
-      for (const row of input.rows) {
-        await this.plansService.saveSheetRow(actor, sheetId, {
-          id: row.id,
-          title: row.title,
-          description: row.description,
-          status: row.status,
-          priority: row.priority,
-          dueDate: row.dueDate,
-          responsibleId: row.responsibleId,
-          unitId: row.unitId,
-          values: row.values,
-        });
-      }
+      await this.plansRepo.bulkUpsertSheetRows(actor.tenantId, sheetId, input.rows);
     }
 
-    await invalidateSheetRowCountCache(actor.tenantId, sheetId);
+    await invalidateSheetCaches(actor.tenantId, sheetId);
     return this.getSummary(actor, sheetId);
   }
 
@@ -314,9 +330,10 @@ export class SheetsService {
     const tenantId = input.empresaId ?? actor.tenantId;
     if (tenantId !== actor.tenantId) throw new ForbiddenError();
 
-    const issues: Array<{ line?: number; message: string }> = [];
+    const issues: SheetImportIssue[] = [];
     let imported = 0;
     let skipped = 0;
+    let quotaReached = false;
 
     let plan =
       (input.options?.planId
@@ -341,9 +358,14 @@ export class SheetsService {
       await this.plansRepo.replaceWorkbookContent(plan.id, tenantId);
     }
 
+    const columnInput = input.columns.slice(0, PRODUCT_LIMITS.maxColumnsPerSheet);
+    if (input.columns.length > PRODUCT_LIMITS.maxColumnsPerSheet) {
+      issues.push({ code: 'COLUMN_QUOTA', message: columnQuotaMessage() });
+    }
+
     if (!input.options?.skipColumnSync) {
       const withRoles = pickUniqueSemanticRoles(
-        input.columns.map((col, index) => ({
+        columnInput.map((col, index) => ({
           ...col,
           semanticRole: inferSemanticRole({
             name: col.name,
@@ -404,7 +426,7 @@ export class SheetsService {
       const line = index + 1;
       if (!row.title?.trim()) {
         skipped += 1;
-        issues.push({ line, message: 'Título vazio' });
+        issues.push({ line, code: 'ROW_ERROR', message: 'Título vazio' });
         continue;
       }
 
@@ -419,26 +441,25 @@ export class SheetsService {
 
       if (row.status && !status) {
         skipped += 1;
-        issues.push({ line, message: `Status inválido: ${row.status}` });
+        issues.push({ line, code: 'ROW_ERROR', message: `Status inválido: ${row.status}` });
         continue;
       }
 
       const values = (row.values ?? {}) as Record<string, unknown>;
+      const stringValues = Object.fromEntries(
+        Object.entries(values).map(([key, value]) => [key, String(value ?? '').trim()]),
+      ) as Record<string, string>;
       const dueRaw =
         row.dueDate?.trim() ||
         (dueColumn ? String(values[dueColumn.name] ?? values[dueColumn.id] ?? '') : '');
-      const parsedDue = dueRaw ? normalizeDateValue(dueRaw) : { value: '' };
-      const dueDate = parsedDue.value ? new Date(parsedDue.value) : undefined;
+      const dueDate =
+        parseDueDateString(dueRaw) ?? pickDueDateFromNamedValues(stringValues);
 
       const assigneeRaw =
         (assigneeColumn
           ? String(values[assigneeColumn.name] ?? values[assigneeColumn.id] ?? '')
           : '') || '';
       const matched = matchTenantMember(members, assigneeRaw);
-
-      const stringValues = Object.fromEntries(
-        Object.entries(values).map(([key, value]) => [key, String(value ?? '').trim()]),
-      ) as Record<string, string>;
 
       if (
         isBlankPlanRow({
@@ -469,6 +490,19 @@ export class SheetsService {
         unitId: row.unitId,
         values,
       });
+    }
+
+    const remaining = await this.tenantQuota.remainingRows(tenantId);
+    if (remaining <= 0) {
+      throw new QuotaError(rowQuotaMessage(), {
+        limit: PRODUCT_LIMITS.maxRowsPerTenant,
+      });
+    }
+    if (prepared.length > remaining) {
+      skipped += prepared.length - remaining;
+      quotaReached = true;
+      issues.push({ code: 'QUOTA_EXCEEDED', message: rowQuotaMessage() });
+      prepared.length = remaining;
     }
 
     const BATCH = 100;
@@ -512,6 +546,7 @@ export class SheetsService {
             skipped += 1;
             issues.push({
               line: row.line,
+              code: 'ROW_ERROR',
               message:
                 rowError instanceof Error ? rowError.message : 'Erro ao importar linha',
             });
@@ -521,11 +556,13 @@ export class SheetsService {
       }
     }
 
-    await invalidateSheetRowCountCache(tenantId, plan.id);
+    await invalidateSheetCaches(tenantId, plan.id);
     return {
       planId: plan.id,
       imported,
       skipped,
+      truncated: quotaReached,
+      quotaReached,
       issues,
     };
   }
@@ -541,6 +578,26 @@ export class SheetsService {
     if (isPlatformAdmin(actor)) throw new ForbiddenError();
     if (!file?.path) {
       throw new NotFoundError('Arquivo não recebido');
+    }
+    if (file.size > PRODUCT_LIMITS.maxUploadMb * 1024 * 1024) {
+      try {
+        fs.unlinkSync(file.path);
+      } catch {
+        // ignore
+      }
+      throw new QuotaError(uploadQuotaMessage());
+    }
+
+    try {
+      assertAllowedExtension(file.originalname);
+      await assertRealFileType(file.path, file.originalname);
+    } catch (err) {
+      try {
+        fs.unlinkSync(file.path);
+      } catch {
+        // ignore
+      }
+      throw err;
     }
 
     const jobId = await enqueueSheetParseJob({
@@ -594,11 +651,9 @@ export class SheetsService {
     onProgress?: (progress: SheetJobProgress) => void | Promise<void>,
   ) {
     const lockKey = sheetJobLockKey(actor.tenantId);
-    const locked = await cacheTryLock(lockKey, 15 * 60);
+    const locked = await acquireExclusiveLock(lockKey, 15 * 60);
     if (!locked) {
-      throw new ValidationError(
-        'Já existe um processamento de planilha em andamento para esta empresa. Aguarde a conclusão.',
-      );
+      throw new ConflictError(importJobInProgressMessage(), 'JOB_IN_PROGRESS');
     }
 
     try {
@@ -628,7 +683,6 @@ export class SheetsService {
     } finally {
       await cacheUnlock(lockKey);
       try {
-        const fs = await import('fs');
         if (file.path) fs.unlinkSync(file.path);
       } catch {
         // ignore
@@ -642,11 +696,9 @@ export class SheetsService {
     onProgress?: (progress: SheetJobProgress) => void | Promise<void>,
   ) {
     const lockKey = sheetJobLockKey(actor.tenantId);
-    const locked = await cacheTryLock(lockKey, 30 * 60);
+    const locked = await acquireExclusiveLock(lockKey, 30 * 60);
     if (!locked) {
-      throw new ValidationError(
-        'Já existe um processamento de planilha em andamento para esta empresa. Aguarde a conclusão.',
-      );
+      throw new ConflictError(importJobInProgressMessage(), 'JOB_IN_PROGRESS');
     }
 
     try {
@@ -655,7 +707,7 @@ export class SheetsService {
         void onProgress?.({ current, total, phase: 'import' });
       });
       if (result.planId) {
-        await invalidateSheetRowCountCache(actor.tenantId, result.planId);
+        await invalidateSheetCaches(actor.tenantId, result.planId);
       }
       await onProgress?.({
         current: result.imported + result.skipped,
@@ -683,7 +735,7 @@ export class SheetsService {
     const headerRowIndex = input.headerRowIndex ?? meta.suggestedHeaderRow ?? 1;
     onProgress?.(0, meta.totalRows);
 
-    const columns = input.columns.map((col, index) => ({
+    const columns = input.columns.slice(0, PRODUCT_LIMITS.maxColumnsPerSheet).map((col, index) => ({
       name: col.name
         .toLowerCase()
         .replace(/[^a-z0-9_]+/g, '_')
@@ -701,10 +753,16 @@ export class SheetsService {
     let planId: string | undefined;
     let imported = 0;
     let skipped = 0;
-    const issues: Array<{ line?: number; message: string }> = [];
+    const issues: SheetImportIssue[] = [];
     let globalLine = 0;
     let firstChunk = true;
+    let quotaReached = false;
+    let fileTruncated = false;
     let headerIndexByName = new Map<string, number>();
+
+    if (input.columns.length > PRODUCT_LIMITS.maxColumnsPerSheet) {
+      issues.push({ code: 'COLUMN_QUOTA', message: columnQuotaMessage() });
+    }
 
     const mapValues = (dense: string[], rawByHeader?: Record<string, string>) => {
       const values: Record<string, string> = {};
@@ -743,7 +801,7 @@ export class SheetsService {
         description: pickMappedValue(values, ['descricao_fato', 'descricao', 'description']),
         status: pickMappedValue(values, ['status']),
         priority: pickMappedValue(values, ['prioridade', 'priority']),
-        dueDate: pickMappedValue(values, ['data_fim', 'prazo', 'dueDate', 'due_date']),
+        dueDate: pickDueDateFromNamedValues(values)?.toISOString(),
         values,
       };
     };
@@ -752,7 +810,7 @@ export class SheetsService {
       rows: ReturnType<typeof toImportRow>[],
       totalHint: number,
     ) => {
-      if (rows.length === 0) return;
+      if (quotaReached || rows.length === 0) return;
       const result = await this.importJson(actor, {
         empresaId: input.empresaId,
         title: input.title,
@@ -771,6 +829,7 @@ export class SheetsService {
       skipped += result.skipped;
       for (const issue of result.issues) {
         if (issues.length < IMPORT_ISSUE_CAP) issues.push(issue);
+        if (issue.code === 'QUOTA_EXCEEDED') quotaReached = true;
       }
       firstChunk = false;
       onProgress?.(globalLine, totalHint);
@@ -786,6 +845,7 @@ export class SheetsService {
             headerIndexByName = new Map(headers.map((header, index) => [header, index]));
           },
           onRow: async (_raw, lineNumber, dense) => {
+            if (quotaReached) return;
             globalLine += 1;
             const mapped = mapValues(dense);
             const importRow = toImportRow(mapped, lineNumber);
@@ -804,6 +864,7 @@ export class SheetsService {
         { headerRowIndex, columnCount: meta.columnCount || columns.length },
       );
       await flush(batch, streamed.totalRows);
+      fileTruncated = streamed.truncated;
       onProgress?.(streamed.totalRows, streamed.totalRows);
     } else {
       for await (const rawBatch of iterateSheetParseRows(
@@ -811,6 +872,7 @@ export class SheetsService {
         input.parseId,
         IMPORT_FROM_PARSE_BATCH,
       )) {
+        if (quotaReached) break;
         const rows = rawBatch
           .map((raw) => {
             globalLine += 1;
@@ -838,154 +900,99 @@ export class SheetsService {
       );
     }
 
+    if (fileTruncated) {
+      issues.unshift({
+        code: 'IMPORT_TRUNCATED',
+        message: importTruncatedMessage(PRODUCT_LIMITS.maxRowsPerTenant),
+      });
+    }
+
     void deleteSheetParse(actor.tenantId, input.parseId);
 
     return {
       planId: planId ?? '',
       imported,
       skipped,
+      truncated: fileTruncated || quotaReached,
+      quotaReached,
       issues,
     };
   }
 
   /**
-   * Agrega métricas no servidor (não envia 65k linhas ao browser).
+   * Agrega métricas no Postgres e cacheia o resumo (não transfere a planilha).
    */
   async getAnalytics(actor: AuthUser, sheetId: string) {
     await this.assertSheet(actor, sheetId);
     const scopeResponsibleId = isOperacional(actor) ? actor.id : undefined;
-    const rows = await this.plansRepo.iteratePlanRowsForAnalytics(
+    const cacheKey = sheetAnalyticsCacheKey(actor.tenantId, sheetId, scopeResponsibleId);
+    const cached = await cacheGetJson<SheetAnalyticsResult>(cacheKey);
+    if (cached) return cached;
+
+    const data = await this.plansRepo.getWorkbookAnalytics(
       sheetId,
       actor.tenantId,
-      1000,
       scopeResponsibleId,
     );
+    await cacheSetJson(cacheKey, data, SHEET_META_CACHE_TTL_SEC);
+    return data;
+  }
 
-    const now = new Date();
-    const in7 = new Date(now);
-    in7.setDate(in7.getDate() + 7);
+  async getMyCharts(actor: AuthUser, sheetId: string): Promise<{ charts: UserChartSpec[] }> {
+    await this.assertSheet(actor, sheetId);
+    const membership = await this.plansRepo.getMembershipSheetCharts(actor.membershipId);
+    return { charts: chartsForSheet(membership?.sheetCharts, sheetId) };
+  }
 
-    let total = 0;
-    let concluidas = 0;
-    let atrasadas = 0;
-    let aVencer7d = 0;
-    let onTimeCompleted = 0;
-    const byStatus = new Map<string, number>();
-    const byPrioridade = new Map<string, number>();
-    const byIndicador = new Map<string, number>();
-    const byUnidade = new Map<string, number>();
-    const byResponsavel = new Map<string, number>();
+  async saveMyCharts(
+    actor: AuthUser,
+    sheetId: string,
+    input: SaveMyChartsInput,
+  ): Promise<{ charts: UserChartSpec[] }> {
+    await this.assertSheet(actor, sheetId);
+    const charts = sanitizeUserCharts(input.charts);
+    const membership = await this.plansRepo.getMembershipSheetCharts(actor.membershipId);
+    if (!membership) throw new NotFoundError('Vínculo com a empresa não encontrado');
+    const next = mergeSheetCharts(membership.sheetCharts, sheetId, charts);
+    await this.plansRepo.updateMembershipSheetCharts(membership.id, next);
+    return { charts };
+  }
 
-    for (const row of rows) {
-      const values: Record<string, string> = {};
-      for (const fv of row.fieldValues) {
-        const v = fv.value;
-        values[fv.column.name] =
-          v == null ? '' : typeof v === 'string' ? v : String(v);
-      }
-      // preenche campos nativos se ausentes
-      if (!values.status) values.status = String(row.status);
-      if (!values.prioridade && !values.priority) {
-        values.prioridade = String(row.priority);
-      }
-      if (!values.data_fim && row.dueDate) {
-        values.data_fim = row.dueDate.toISOString().slice(0, 10);
-      }
+  async getChartSeries(
+    actor: AuthUser,
+    sheetId: string,
+    input: ChartSeriesInput,
+  ): Promise<{ series: Record<string, UserChartSlice[]> }> {
+    await this.assertSheet(actor, sheetId);
+    const scopeResponsibleId = isOperacional(actor) ? actor.id : undefined;
+    const specs = sanitizeUserCharts(input.specs);
+    const entries = await Promise.all(
+      specs.map(async (spec) => {
+        const slices = await this.plansRepo.getChartSeries(
+          sheetId,
+          actor.tenantId,
+          spec,
+          scopeResponsibleId,
+        );
+        return [spec.id, slices] as const;
+      }),
+    );
+    return { series: Object.fromEntries(entries) };
+  }
 
-      const hasData = !isBlankPlanRow({
-        title: row.title,
-        description: row.description,
-        responsibleName: null,
-        unitName: null,
-        dueDate: row.dueDate,
-        fieldValues: row.fieldValues,
-      });
-      if (!hasData) continue;
-      total += 1;
+  async duplicateRow(actor: AuthUser, sheetId: string, rowId: string) {
+    await this.assertSheet(actor, sheetId);
+    return this.plansService.duplicate(actor, rowId);
+  }
 
-      const status = (values.status || row.status || '').toLowerCase();
-      const statusFinal = (values.status_final || '').toLowerCase();
-      const isDone =
-        status.includes('conclu') ||
-        status === 'completed' ||
-        statusFinal.startsWith('conclu');
-      if (isDone) {
-        concluidas += 1;
-        if (statusFinal.includes('prazo') || !statusFinal.includes('atraso')) {
-          onTimeCompleted += 1;
-        }
-      }
-
-      const due = row.dueDate ?? (values.data_fim ? new Date(values.data_fim) : null);
-      if (
-        due &&
-        !isDone &&
-        !status.includes('cancel') &&
-        due < now
-      ) {
-        atrasadas += 1;
-      } else if (due && !isDone && due >= now && due <= in7) {
-        aVencer7d += 1;
-      }
-
-      const statusKey = values.status || String(row.status);
-      byStatus.set(statusKey, (byStatus.get(statusKey) ?? 0) + 1);
-
-      const prio = values.prioridade || values.priority || String(row.priority);
-      if (prio.trim()) byPrioridade.set(prio, (byPrioridade.get(prio) ?? 0) + 1);
-
-      const ind = values.indicador || values.programa || values.tema || '';
-      if (ind.trim()) byIndicador.set(ind, (byIndicador.get(ind) ?? 0) + 1);
-
-      const uni = values.unidade || '';
-      if (uni.trim()) byUnidade.set(uni, (byUnidade.get(uni) ?? 0) + 1);
-
-      const resp = values.responsavel || '';
-      if (resp.trim()) byResponsavel.set(resp, (byResponsavel.get(resp) ?? 0) + 1);
-    }
-
-    const toSlices = (map: Map<string, number>) =>
-      Array.from(map.entries())
-        .map(([label, value]) => ({ label, value }))
-        .sort((a, b) => b.value - a.value);
-
-    const aderenciaPct =
-      concluidas > 0 ? Math.round((onTimeCompleted / concluidas) * 100) : 0;
-    const conclusaoPct = total > 0 ? Math.round((concluidas / total) * 100) : 0;
-
-    return {
-      totalAcoes: total,
-      rowCount: total,
-      byStatus: toSlices(byStatus),
-      byPrioridade: toSlices(byPrioridade).map((s) => ({
-        ...s,
-        percent: total > 0 ? Math.round((s.value / total) * 100) : 0,
-      })),
-      byIndicador: toSlices(byIndicador),
-      byUnidadeTop10: toSlices(byUnidade).slice(0, 10),
-      byResponsavelTop10: toSlices(byResponsavel).slice(0, 10),
-      kpis: {
-        total,
-        concluidas,
-        atrasadas,
-        aVencer7d,
-        aderenciaPct,
-        conclusaoPct,
-      },
-      filterOptions: {
-        years: [] as string[],
-        responsaveis: toSlices(byResponsavel).map((s) => s.label),
-        unidades: toSlices(byUnidade).map((s) => s.label),
-        locais: [] as string[],
-        gestores: [] as string[],
-        customColumns: [] as Array<{ key: string; label: string; values: string[] }>,
-      },
-    };
+  async removeRow(actor: AuthUser, sheetId: string, rowId: string) {
+    await this.assertSheet(actor, sheetId);
+    return this.plansService.remove(actor, rowId);
   }
 
   private async assertSheet(actor: AuthUser, sheetId: string) {
     if (isPlatformAdmin(actor)) throw new ForbiddenError();
-    const plan = await this.plansRepo.findPlan(sheetId, actor.tenantId);
+    const plan = await this.plansRepo.findPlanMeta(sheetId, actor.tenantId);
     if (!plan) throw new NotFoundError('Planilha não encontrada');
     return plan;
   }

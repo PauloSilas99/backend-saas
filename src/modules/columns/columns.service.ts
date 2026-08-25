@@ -2,6 +2,7 @@ import { inject, injectable } from 'tsyringe';
 import { ColumnHistoryAction } from '@prisma/client';
 import { ForbiddenError, NotFoundError, ValidationError } from '@shared/errors/AppError';
 import { AuditService } from '@shared/audit/audit.service';
+import { TenantQuotaService } from '@shared/limits/tenant-quota.service';
 import { AuthUser } from '@/types/auth';
 import { canManageColumns, isPlatformAdmin } from '@shared/helpers/rbac';
 import { ActionPlansRepository } from '@modules/action-plans/action-plans.repository';
@@ -18,6 +19,7 @@ export class ColumnsService {
     @inject(ColumnsRepository) private readonly columnsRepository: ColumnsRepository,
     @inject(ActionPlansRepository) private readonly plansRepository: ActionPlansRepository,
     @inject(AuditService) private readonly auditService: AuditService,
+    @inject(TenantQuotaService) private readonly tenantQuota: TenantQuotaService,
   ) {}
 
   private async resolvePlanId(actor: AuthUser, actionPlanId?: string) {
@@ -45,6 +47,7 @@ export class ColumnsService {
     this.assertTenantAccess(actor);
     if (!canManageColumns(actor)) throw new ForbiddenError();
     const planId = await this.resolvePlanId(actor, input.actionPlanId);
+    await this.tenantQuota.assertCanAddColumns(planId, 1);
 
     try {
       const column = await this.columnsRepository.create(actor.tenantId, planId, input);
@@ -105,6 +108,7 @@ export class ColumnsService {
     }
 
     const deleted = await this.columnsRepository.softDelete(id, actor.id, input.reason);
+    await this.columnsRepository.stripCellKey(existing.actionPlanId, id);
     await this.columnsRepository.addHistory({
       columnId: id,
       actorId: actor.id,

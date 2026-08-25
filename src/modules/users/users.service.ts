@@ -11,12 +11,14 @@ import { MailService } from '@shared/mail/mail.service';
 import { AuthUser } from '@/types/auth';
 import {
   canAssignRole,
+  canManageCompanyTeam,
   canManageUsers,
   isOperacional,
   isPlatformAdmin,
   isReadOnly,
 } from '@shared/helpers/rbac';
 import { toFeRole } from '@shared/helpers/roles';
+import { invalidateSessionCache } from '@config/redis-cache';
 import { UsersRepository, generateTemporaryPassword } from './users.repository';
 import { CreateUserInput, UpdateUserInput } from './users.schemas';
 
@@ -71,7 +73,7 @@ export class UsersService {
 
   async listMembers(actor: AuthUser, empresaId: string, q?: string) {
     this.assertEmpresaAccess(actor, empresaId);
-    if (!canManageUsers(actor) && actor.role !== Role.GESTOR && !isReadOnly(actor)) {
+    if (!canManageCompanyTeam(actor) && actor.role !== Role.GESTOR && !isReadOnly(actor)) {
       throw new ForbiddenError();
     }
     const memberships = await this.usersRepository.listByTenant(empresaId, q);
@@ -81,12 +83,16 @@ export class UsersService {
   }
 
   async create(actor: AuthUser, input: CreateUserInput, empresaId?: string) {
-    if (!canManageUsers(actor)) {
+    if (!canManageCompanyTeam(actor)) {
       throw new ForbiddenError('Apenas gerente cria usuários');
     }
 
     const tenantId = empresaId ?? actor.tenantId;
     this.assertEmpresaAccess(actor, tenantId);
+
+    if (input.role === Role.PLATFORM_ADMIN) {
+      throw new ForbiddenError('Não é permitido atribuir este perfil');
+    }
 
     if (!canAssignRole(actor.role, input.role)) {
       throw new ForbiddenError('Não é permitido atribuir este perfil');
@@ -130,7 +136,7 @@ export class UsersService {
   }
 
   async update(actor: AuthUser, userId: string, input: UpdateUserInput, empresaId?: string) {
-    if (!canManageUsers(actor)) {
+    if (!canManageCompanyTeam(actor)) {
       throw new ForbiddenError('Apenas gerente atualiza usuários');
     }
 
@@ -178,12 +184,15 @@ export class UsersService {
   }
 
   async remove(actor: AuthUser, userId: string, empresaId?: string) {
-    if (isPlatformAdmin(actor)) {
+    if (isPlatformAdmin(actor) && !empresaId) {
       if (actor.id === userId) {
         throw new ForbiddenError('Não é possível excluir a própria conta de admin');
       }
       const existing = await this.usersRepository.findUserById(userId);
       if (!existing) throw new NotFoundError('Usuário não encontrado');
+      if (existing.isPlatformAdmin) {
+        throw new ForbiddenError('Não é possível excluir um administrador da plataforma');
+      }
 
       await this.usersRepository.hardDeleteUser(userId, actor.id);
       await this.auditService.log({
@@ -195,7 +204,7 @@ export class UsersService {
       return { id: userId, deleted: true, hard: true };
     }
 
-    if (!canManageUsers(actor)) {
+    if (!canManageCompanyTeam(actor)) {
       throw new ForbiddenError();
     }
     const tenantId = empresaId ?? actor.tenantId;
@@ -229,12 +238,16 @@ export class UsersService {
     }
     const existing = await this.usersRepository.findUserById(userId);
     if (!existing) throw new NotFoundError('Usuário não encontrado');
+    if (existing.isPlatformAdmin) {
+      throw new ForbiddenError('Conta de administrador da plataforma não é gerenciada aqui');
+    }
 
     const wasInactive = !existing.isActive;
     await this.usersRepository.updateUser(userId, { isActive });
     if (!isActive) {
       await this.usersRepository.deactivateAllMemberships(userId);
       await this.usersRepository.bumpTokenVersion(userId);
+      await invalidateSessionCache(userId);
     } else {
       await this.usersRepository.reactivatePrimaryMemberships(userId);
       if (wasInactive) {
@@ -272,7 +285,7 @@ export class UsersService {
   }
 
   async removeMembership(actor: AuthUser, membershipId: string) {
-    if (!canManageUsers(actor)) {
+    if (!canManageCompanyTeam(actor)) {
       throw new ForbiddenError();
     }
     const membership = await this.usersRepository.findMembershipById(membershipId);

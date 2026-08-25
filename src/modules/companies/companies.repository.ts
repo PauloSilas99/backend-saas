@@ -8,7 +8,7 @@ export class CompaniesRepository {
   listAll() {
     return this.prisma.tenant.findMany({
       include: {
-        _count: { select: { memberships: true, units: true } },
+        _count: { select: { memberships: true, units: true, actionPlans: true } },
         subscription: { include: { plan: true } },
       },
       orderBy: { createdAt: 'desc' },
@@ -21,7 +21,7 @@ export class CompaniesRepository {
       include: {
         units: true,
         subscription: { include: { plan: true } },
-        _count: { select: { memberships: true } },
+        _count: { select: { memberships: true, actionPlans: true } },
       },
     });
   }
@@ -32,6 +32,42 @@ export class CompaniesRepository {
 
   create(data: { name: string; slug: string; document?: string }) {
     return this.prisma.tenant.create({ data });
+  }
+
+  createWithTrial(data: { name: string; slug: string; document?: string }) {
+    return this.prisma.$transaction(async (tx) => {
+      const tenant = await tx.tenant.create({
+        data: {
+          name: data.name,
+          slug: data.slug,
+          document: data.document,
+        },
+      });
+
+      const starterPlan = await tx.plan.findFirst({
+        where: { code: 'starter', isActive: true },
+      });
+      if (starterPlan) {
+        await tx.subscription.create({
+          data: {
+            tenantId: tenant.id,
+            planId: starterPlan.id,
+            status: 'TRIALING',
+            currentPeriodStart: new Date(),
+            currentPeriodEnd: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000),
+          },
+        });
+      }
+
+      return tx.tenant.findUniqueOrThrow({
+        where: { id: tenant.id },
+        include: {
+          units: true,
+          subscription: { include: { plan: true } },
+          _count: { select: { memberships: true, actionPlans: true } },
+        },
+      });
+    });
   }
 
   createWithOwner(data: {
@@ -77,7 +113,7 @@ export class CompaniesRepository {
         include: {
           units: true,
           subscription: { include: { plan: true } },
-          _count: { select: { memberships: true } },
+          _count: { select: { memberships: true, actionPlans: true } },
         },
       });
     });

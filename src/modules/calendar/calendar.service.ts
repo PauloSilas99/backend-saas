@@ -13,6 +13,7 @@ import {
   UpsertActionOverlayInput,
   UpsertOverrideInput,
 } from './calendar.schemas';
+import { classifyCalendarDateColumn } from '@modules/action-plan-sheets/parse/due-date';
 
 @injectable()
 export class CalendarService {
@@ -41,7 +42,7 @@ export class CalendarService {
 
     const personalScope = isOperacional(actor) ? actor.id : query.assigneeId;
 
-    const [actionRows, personalActivities, overrides, overlays] = await Promise.all([
+    const [actionRows, personalActivities, overrides] = await Promise.all([
       this.calendarRepository.listActionRowsForCalendar(
         actor.tenantId,
         from,
@@ -54,8 +55,13 @@ export class CalendarService {
         query.from.slice(0, 10),
         query.to.slice(0, 10),
       ),
-      this.calendarRepository.listOverlaysForUser(actor.tenantId, actor.id),
     ]);
+
+    const overlays = await this.calendarRepository.listOverlaysForUser(
+      actor.tenantId,
+      actor.id,
+      actionRows.map((row) => row.id),
+    );
 
     const overlayByRow = new Map(overlays.map((o) => [o.actionRowId, o]));
 
@@ -102,11 +108,10 @@ export class CalendarService {
 
       const values = fieldValuesToMap(row.fieldValues);
       const dates = {
-        ocorrencia: parseDateLike(values.data_ocorrencia),
-        inicio: parseDateLike(values.data_inicio),
+        ocorrencia: pickCalendarDate(values, 'ocorrencia'),
+        inicio: pickCalendarDate(values, 'inicio'),
         prazo:
-          parseDateLike(values.data_fim) ??
-          parseDateLike(values.prazo) ??
+          pickCalendarDate(values, 'prazo') ??
           row.dueDate,
       };
       const periodStart = overlay?.displayStartsAt ?? dates.inicio;
@@ -497,6 +502,18 @@ function fieldValuesToMap(
     values[fv.column.name] = jsonToString(fv.value);
   }
   return values;
+}
+
+function pickCalendarDate(
+  values: Record<string, string>,
+  kind: 'ocorrencia' | 'inicio' | 'prazo',
+): Date | null {
+  for (const [name, raw] of Object.entries(values)) {
+    if (classifyCalendarDateColumn(name) !== kind) continue;
+    const parsed = parseDateLike(raw);
+    if (parsed) return parsed;
+  }
+  return null;
 }
 
 function parseDateLike(raw: string | null | undefined): Date | null {

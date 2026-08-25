@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { ActionPriority, ActionStatus, ColumnFieldType } from '@prisma/client';
+import { PRODUCT_LIMITS } from '@shared/limits/product-limits';
 
 export const createActionPlanSchema = z.object({
   title: z.string().min(2).max(200),
@@ -79,6 +80,7 @@ export const importSheetJsonSchema = z.object({
         sortOrder: z.number().int().optional(),
       }),
     )
+    .max(PRODUCT_LIMITS.maxColumnsPerSheet)
     .default([]),
   rows: z
     .array(
@@ -93,6 +95,7 @@ export const importSheetJsonSchema = z.object({
         values: z.record(z.string(), z.union([z.string(), z.number(), z.boolean(), z.null()])).optional(),
       }),
     )
+    .max(PRODUCT_LIMITS.importJsonChunkRows)
     .default([]),
   options: z
     .object({
@@ -111,7 +114,7 @@ export const columnsOrderSchema = z.object({
 
 export const listActionsQuerySchema = z.object({
   page: z.coerce.number().int().min(1).default(1),
-  pageSize: z.coerce.number().int().min(1).max(200).default(50),
+  pageSize: z.coerce.number().int().min(1).max(PRODUCT_LIMITS.maxPageSize).default(50),
   search: z.string().optional(),
   status: z.nativeEnum(ActionStatus).optional(),
   priority: z.nativeEnum(ActionPriority).optional(),
@@ -168,14 +171,15 @@ export const importFromParseSchema = z.object({
         sortOrder: z.number().int().optional(),
       }),
     )
-    .min(1),
+    .min(1)
+    .max(PRODUCT_LIMITS.maxColumnsPerSheet),
 });
 
 export type ImportFromParseInput = z.infer<typeof importFromParseSchema>;
 
 export const listSheetRowsQuerySchema = z.object({
   page: z.coerce.number().int().min(1).default(1),
-  pageSize: z.coerce.number().int().min(1).max(200).default(50),
+  pageSize: z.coerce.number().int().min(1).max(PRODUCT_LIMITS.maxPageSize).default(50),
   search: z.string().optional(),
 });
 
@@ -183,4 +187,23 @@ export const parseDistinctsQuerySchema = z.object({
   header: z.string().min(1).max(200),
 });
 
+export const userChartSpecSchema = z.object({
+  id: z.string().min(1).max(80),
+  title: z.string().min(1).max(120),
+  type: z.enum(['pie', 'bar', 'line']),
+  columnKey: z.string().min(1).max(80),
+  aggregation: z.enum(['count', 'sum']).default('count'),
+  valueColumnKey: z.string().min(1).max(80).optional(),
+});
+
+export const saveMyChartsSchema = z.object({
+  charts: z.array(userChartSpecSchema).max(PRODUCT_LIMITS.maxUserChartsPerSheet),
+});
+
+export const chartSeriesSchema = z.object({
+  specs: z.array(userChartSpecSchema).min(1).max(PRODUCT_LIMITS.maxUserChartsPerSheet),
+});
+
 export type ListSheetRowsQuery = z.infer<typeof listSheetRowsQuerySchema>;
+export type SaveMyChartsInput = z.infer<typeof saveMyChartsSchema>;
+export type ChartSeriesInput = z.infer<typeof chartSeriesSchema>;

@@ -99,6 +99,7 @@ async function main() {
       name: adminName,
       isActive: true,
       emailVerifiedAt: new Date(),
+      isPlatformAdmin: true,
     },
     create: {
       email: adminEmail,
@@ -106,6 +107,7 @@ async function main() {
       name: adminName,
       isActive: true,
       emailVerifiedAt: new Date(),
+      isPlatformAdmin: true,
     },
   });
 
@@ -160,10 +162,17 @@ async function main() {
     },
   });
 
-  await prisma.membership.upsert({
-    where: { userId_tenantId: { userId: admin.id, tenantId: tenant.id } },
-    update: { role: Role.PLATFORM_ADMIN, isActive: true },
-    create: { userId: admin.id, tenantId: tenant.id, role: Role.PLATFORM_ADMIN },
+  await prisma.user.updateMany({
+    where: {
+      memberships: { some: { role: Role.PLATFORM_ADMIN } },
+    },
+    data: { isPlatformAdmin: true },
+  });
+  await prisma.membership.deleteMany({
+    where: { role: Role.PLATFORM_ADMIN },
+  });
+  await prisma.membership.deleteMany({
+    where: { userId: admin.id },
   });
 
   await prisma.membership.upsert({

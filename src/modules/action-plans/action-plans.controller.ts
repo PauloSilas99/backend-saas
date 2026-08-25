@@ -132,16 +132,4 @@ export class ActionPlansController {
       next(error);
     }
   }
-
-  async calendar(req: Request, res: Response, next: NextFunction) {
-    try {
-      const service = container.resolve(ActionPlansService);
-      const from = String(req.query.from);
-      const to = String(req.query.to);
-      const data = await service.calendar(req.user!, from, to);
-      res.json({ success: true, data });
-    } catch (error) {
-      next(error);
-    }
-  }
 }

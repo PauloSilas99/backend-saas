@@ -10,6 +10,8 @@ import { AuthUser } from '@/types/auth';
 import { BillingRepository } from './billing.repository';
 import { BillingProvider } from './providers/billing-provider';
 import { CheckoutBody, PortalBody } from './billing.schemas';
+import { invalidateSubscriptionCache, cacheGetJson, cacheSetJson, subscriptionCacheKey } from '@config/redis-cache';
+import { PRODUCT_LIMITS } from '@shared/limits/product-limits';
 
 @injectable()
 export class BillingService {
@@ -25,6 +27,21 @@ export class BillingService {
 
   async getSubscription(tenantId: string) {
     return this.billingRepository.findSubscriptionByTenant(tenantId);
+  }
+
+  async getCachedSubscriptionStatus(tenantId: string): Promise<SubscriptionStatus | null> {
+    const cached = await cacheGetJson<{ status: SubscriptionStatus }>(
+      subscriptionCacheKey(tenantId),
+    );
+    if (cached?.status) return cached.status;
+    const subscription = await this.getSubscription(tenantId);
+    if (!subscription) return null;
+    await cacheSetJson(
+      subscriptionCacheKey(tenantId),
+      { status: subscription.status },
+      PRODUCT_LIMITS.subscriptionCacheTtlSec,
+    );
+    return subscription.status;
   }
 
   async checkout(actor: AuthUser, input: CheckoutBody) {
@@ -57,6 +74,7 @@ export class BillingService {
       status: SubscriptionStatus.INACTIVE,
       externalId: result.externalSubscriptionId,
     });
+    await invalidateSubscriptionCache(actor.tenantId);
 
     await this.auditService.log({
       tenantId: actor.tenantId,
@@ -142,6 +160,7 @@ export class BillingService {
           metadata: event,
         });
 
+        await invalidateSubscriptionCache(subscription.tenantId);
         return updated;
       }
       case 'subscription.canceled': {
@@ -155,6 +174,7 @@ export class BillingService {
           resource: 'subscription',
           resourceId: subscription.id,
         });
+        await invalidateSubscriptionCache(subscription.tenantId);
         return updated;
       }
       case 'subscription.past_due':
@@ -181,6 +201,7 @@ export class BillingService {
           resource: 'subscription',
           resourceId: subscription.id,
         });
+        await invalidateSubscriptionCache(subscription.tenantId);
         return updated;
       }
       default:

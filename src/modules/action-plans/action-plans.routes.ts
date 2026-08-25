@@ -15,15 +15,9 @@ import {
   transitionActionSchema,
   updateActionRowSchema,
 } from './action-plans.schemas';
-import { z } from 'zod';
 
 const controller = new ActionPlansController();
 const router = Router();
-
-const calendarQuerySchema = z.object({
-  from: z.string().datetime(),
-  to: z.string().datetime(),
-});
 
 router.use(authenticate, subscriptionGate);
 
@@ -33,12 +27,6 @@ router.get(
   '/actions',
   validate({ query: listActionsQuerySchema }),
   (req, res, next) => controller.listActions(req, res, next),
-);
-
-router.get(
-  '/calendar',
-  validate({ query: calendarQuerySchema }),
-  (req, res, next) => controller.calendar(req, res, next),
 );
 
 router.post(

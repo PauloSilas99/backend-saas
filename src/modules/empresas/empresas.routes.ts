@@ -46,21 +46,21 @@ router.get('/:empresaId/members', (req, res, next) => users.listMembers(req, res
 
 router.post(
   '/:empresaId/members',
-  roleGuard(Role.GERENTE),
+  roleGuard(Role.GERENTE, Role.PLATFORM_ADMIN),
   validate({ body: createUserSchema }),
   (req, res, next) => users.create(req, res, next),
 );
 
 router.patch(
   '/:empresaId/members/:id',
-  roleGuard(Role.GERENTE),
+  roleGuard(Role.GERENTE, Role.PLATFORM_ADMIN),
   validate({ body: updateUserSchema }),
   (req, res, next) => users.update(req, res, next),
 );
 
 router.delete(
   '/:empresaId/members/:id',
-  roleGuard(Role.GERENTE),
+  roleGuard(Role.GERENTE, Role.PLATFORM_ADMIN),
   (req, res, next) => users.remove(req, res, next),
 );
 
@@ -102,13 +102,13 @@ empresasMembersRouter.use(authenticate, subscriptionGate);
 
 empresasMembersRouter.patch(
   '/:id',
-  roleGuard(Role.GERENTE),
+  roleGuard(Role.GERENTE, Role.PLATFORM_ADMIN),
   validate({ body: updateUserSchema }),
   (req, res, next) => users.update(req, res, next),
 );
 
 empresasMembersRouter.delete(
   '/:id',
-  roleGuard(Role.GERENTE),
+  roleGuard(Role.GERENTE, Role.PLATFORM_ADMIN),
   (req, res, next) => users.remove(req, res, next),
 );

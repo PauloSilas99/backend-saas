@@ -65,6 +65,23 @@ export class CompaniesService {
     const existing = await this.companiesRepository.findBySlug(slug);
     if (existing) throw new ConflictError('Slug já em uso');
 
+    if (isPlatformAdmin(actor)) {
+      const company = await this.companiesRepository.createWithTrial({
+        name: input.name,
+        slug,
+        document: input.document,
+      });
+
+      await this.auditService.log({
+        tenantId: company.id,
+        userId: actor.id,
+        action: 'companies.create',
+        resource: 'tenant',
+        resourceId: company.id,
+      });
+      return company;
+    }
+
     const company = await this.companiesRepository.createWithOwner({
       name: input.name,
       slug,

@@ -29,6 +29,13 @@ export class AuthRepository {
     });
   }
 
+  findSessionState(id: string) {
+    return this.prisma.user.findUnique({
+      where: { id },
+      select: { id: true, isActive: true, tokenVersion: true },
+    });
+  }
+
   createUserWithTenant(data: {
     name: string;
     email: string;

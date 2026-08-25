@@ -18,7 +18,7 @@ router.get('/', validate({ query: listUsersQuerySchema }), (req, res, next) =>
 
 router.post(
   '/',
-  roleGuard(Role.GERENTE),
+  roleGuard(Role.GERENTE, Role.PLATFORM_ADMIN),
   validate({ body: createUserSchema }),
   (req, res, next) => controller.create(req, res, next),
 );

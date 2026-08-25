@@ -12,10 +12,12 @@ export type PlanRowBlankInput = {
   unitName?: string | null;
   dueDate?: Date | null;
   fieldValues?: FieldValue[];
+  cells?: Prisma.JsonValue | Record<string, unknown> | null;
+  autoColumnIds?: Set<string>;
 };
 
+export const AUTO_COLUMN_NAMES = new Set(['registro', 'data_criacao', 'id']);
 const PLACEHOLDER_TITLE = /^(Linha \d+|Nova ação|Ação sem título|Registro \d+|ID-[A-Z0-9]+)$/i;
-const AUTO_COLUMN_NAMES = new Set(['registro', 'data_criacao', 'id']);
 
 function jsonToString(value: Prisma.JsonValue | null | undefined): string {
   if (value == null) return '';
@@ -37,6 +39,14 @@ export function isBlankPlanRow(row: PlanRowBlankInput): boolean {
     return jsonToString(fv.value).length > 0;
   });
   if (hasFieldValue) return false;
+
+  if (row.cells && typeof row.cells === 'object' && !Array.isArray(row.cells)) {
+    const hasCell = Object.entries(row.cells).some(([columnId, value]) => {
+      if (row.autoColumnIds?.has(columnId)) return false;
+      return jsonToString(value as Prisma.JsonValue).length > 0;
+    });
+    if (hasCell) return false;
+  }
 
   const title = row.title?.trim() ?? '';
   if (!title) return true;

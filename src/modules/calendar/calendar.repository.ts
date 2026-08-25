@@ -4,10 +4,14 @@ import {
   ActionStatus,
   CalendarActivityStatus,
   CalendarOverrideType,
+  ColumnFieldType,
+  ColumnSemanticRole,
   Prisma,
   PrismaClient,
 } from '@prisma/client';
 import { CalendarRangeQuery } from './calendar.schemas';
+import { PRODUCT_LIMITS } from '@shared/limits/product-limits';
+import { cellsToNamedFieldValues } from '@modules/action-plans/row-cells';
 
 @injectable()
 export class CalendarRepository {
@@ -164,6 +168,10 @@ export class CalendarRepository {
     'data_inicio',
     'data_fim',
     'prazo',
+    'data_criacao',
+    'data_verificacao',
+    'data_prox_verificacao',
+    'data_conclusao',
   ];
 
   private actionRowCalendarSelect() {
@@ -179,46 +187,61 @@ export class CalendarRepository {
       unitName: true,
       actionPlan: { select: { id: true, title: true } },
       responsible: { select: { id: true, name: true, email: true } },
-      fieldValues: {
-        select: {
-          value: true,
-          column: { select: { name: true } },
-        },
-      },
+      cells: true,
     } as const;
   }
 
   /**
-   * Ações da base (planilha) no período.
-   * Inclui dueDate nativo e colunas data_ocorrencia / data_inicio / data_fim.
+   * Ações da base no período visível. Filtra data no SQL para não vazar a planilha.
    */
-  listActionRowsForCalendar(
+  async listActionRowsForCalendar(
     tenantId: string,
     from: Date,
     to: Date,
     responsibleId?: string,
   ) {
-    return this.prisma.actionPlanRow.findMany({
-      where: {
-        deletedAt: null,
-        actionPlan: { tenantId },
-        ...(responsibleId ? { responsibleId } : {}),
-        OR: [
-          { dueDate: { gte: from, lte: to } },
-          {
-            fieldValues: {
-              some: {
-                column: {
-                  name: { in: CalendarRepository.DATE_COLUMN_NAMES },
-                },
-              },
-            },
-          },
-        ],
-      },
+    const fromYmd = from.toISOString().slice(0, 10);
+    const toYmd = to.toISOString().slice(0, 10);
+    const ids = await this.prisma.$queryRaw<Array<{ id: string }>>`
+      SELECT r.id
+      FROM action_plan_rows r
+      INNER JOIN action_plans p ON p.id = r.action_plan_id
+      WHERE p.tenant_id = ${tenantId}
+        AND r.deleted_at IS NULL
+        AND (${responsibleId ?? null}::text IS NULL OR r.responsible_id = ${responsibleId ?? null}::text)
+        AND (
+          (r.due_date >= ${from} AND r.due_date <= ${to})
+          OR EXISTS (
+            SELECT 1
+            FROM action_columns c
+            WHERE c.action_plan_id = r.action_plan_id
+              AND c.deleted_at IS NULL
+              AND (
+                c.field_type = 'DATE'::"ColumnFieldType"
+                OR c.semantic_role = 'DUE_DATE'::"ColumnSemanticRole"
+                OR c.name IN (
+                  'data_ocorrencia', 'data_inicio', 'data_fim', 'prazo',
+                  'data_criacao', 'data_verificacao', 'data_prox_verificacao', 'data_conclusao'
+                )
+                OR c.name LIKE 'prazo%'
+                OR c.name LIKE 'data_%'
+              )
+              AND jsonb_typeof(r.cells -> c.id::text) = 'string'
+              AND (r.cells ->> c.id::text) ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}'
+              AND LEFT(r.cells ->> c.id::text, 10) >= ${fromYmd}
+              AND LEFT(r.cells ->> c.id::text, 10) <= ${toYmd}
+          )
+        )
+      ORDER BY r.due_date ASC NULLS LAST
+      LIMIT ${PRODUCT_LIMITS.calendarMaxEvents}
+    `;
+    if (ids.length === 0) return [];
+    const rows = await this.prisma.actionPlanRow.findMany({
+      where: { id: { in: ids.map((row) => row.id) } },
       select: this.actionRowCalendarSelect(),
       orderBy: { dueDate: 'asc' },
     });
+    return this.withCalendarFieldValues(rows, tenantId);
   }
 
   findActionRow(id: string, tenantId: string) {
@@ -234,15 +257,43 @@ export class CalendarRepository {
     });
   }
 
-  findActionRowsByIds(ids: string[], tenantId: string) {
-    if (ids.length === 0) return Promise.resolve([]);
-    return this.prisma.actionPlanRow.findMany({
+  async findActionRowsByIds(ids: string[], tenantId: string) {
+    if (ids.length === 0) return [];
+    const rows = await this.prisma.actionPlanRow.findMany({
       where: {
         id: { in: ids },
         deletedAt: null,
         actionPlan: { tenantId },
       },
       select: this.actionRowCalendarSelect(),
+    });
+    return this.withCalendarFieldValues(rows, tenantId);
+  }
+
+  private async withCalendarFieldValues<
+    T extends { cells: Prisma.JsonValue },
+  >(rows: T[], tenantId: string) {
+    if (rows.length === 0) return [];
+    const columns = await this.prisma.actionColumn.findMany({
+      where: {
+        deletedAt: null,
+        actionPlan: { tenantId },
+        OR: [
+          { fieldType: ColumnFieldType.DATE },
+          { semanticRole: ColumnSemanticRole.DUE_DATE },
+          { name: { in: CalendarRepository.DATE_COLUMN_NAMES } },
+          { name: { startsWith: 'prazo' } },
+          { name: { startsWith: 'data_' } },
+        ],
+      },
+      select: { id: true, name: true },
+    });
+    return rows.map((row) => {
+      const { cells, ...rest } = row;
+      return {
+        ...rest,
+        fieldValues: cellsToNamedFieldValues(cells, columns),
+      };
     });
   }
 

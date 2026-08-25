@@ -1,11 +1,14 @@
 import Redis from 'ioredis';
 import { env } from './env';
+import { PRODUCT_LIMITS } from '@shared/limits/product-limits';
 import { logger } from '@shared/logger';
 
-/** TTL padrão para meta leve (rowCount). */
-export const SHEET_META_CACHE_TTL_SEC = 60;
+/** TTL padrão para meta leve (rowCount, analytics). */
+export const SHEET_META_CACHE_TTL_SEC = PRODUCT_LIMITS.sheetMetaCacheTtlSec;
 
 let cacheClient: Redis | null | undefined;
+
+const memoryLocks = new Map<string, number>();
 
 /**
  * Cliente Redis para cache (separado do BullMQ).
@@ -67,20 +70,57 @@ export async function cacheDel(...keys: string[]): Promise<void> {
   }
 }
 
-/** SET NX com TTL — trava simples (ex.: import por tenant). */
-export async function cacheTryLock(key: string, ttlSec: number): Promise<boolean> {
-  const redis = getCacheRedis();
-  if (!redis) return true; // sem Redis: não bloqueia o fluxo
+export async function cacheGetJson<T>(key: string): Promise<T | null> {
+  const raw = await cacheGet(key);
+  if (!raw) return null;
   try {
-    const result = await redis.set(key, '1', 'EX', ttlSec, 'NX');
-    return result === 'OK';
+    return JSON.parse(raw) as T;
   } catch {
-    return true;
+    return null;
   }
 }
 
-export async function cacheUnlock(key: string): Promise<void> {
+export async function cacheSetJson(key: string, value: unknown, ttlSec: number): Promise<void> {
+  await cacheSet(key, JSON.stringify(value), ttlSec);
+}
+
+/**
+ * Lock exclusivo: Redis NX quando disponível; fallback em memória no mesmo processo.
+ * Falha fechado (não permite dois imports no mesmo dyno se o Redis cair).
+ */
+export async function acquireExclusiveLock(key: string, ttlSec: number): Promise<boolean> {
+  const now = Date.now();
+  const localExpiry = memoryLocks.get(key);
+  if (localExpiry && localExpiry > now) return false;
+
+  const redis = getCacheRedis();
+  if (redis) {
+    try {
+      const result = await redis.set(key, '1', 'EX', ttlSec, 'NX');
+      if (result !== 'OK') return false;
+      memoryLocks.set(key, now + ttlSec * 1000);
+      return true;
+    } catch {
+      /* fallback local */
+    }
+  }
+
+  memoryLocks.set(key, now + ttlSec * 1000);
+  return true;
+}
+
+export async function releaseExclusiveLock(key: string): Promise<void> {
+  memoryLocks.delete(key);
   await cacheDel(key);
+}
+
+/** @deprecated use acquireExclusiveLock — lock de import não pode falhar aberto. */
+export async function cacheTryLock(key: string, ttlSec: number): Promise<boolean> {
+  return acquireExclusiveLock(key, ttlSec);
+}
+
+export async function cacheUnlock(key: string): Promise<void> {
+  await releaseExclusiveLock(key);
 }
 
 export function sheetRowCountCacheKey(
@@ -91,14 +131,44 @@ export function sheetRowCountCacheKey(
   return `sheet:rowCount:${tenantId}:${planId}:${scopeResponsibleId ?? 'all'}`;
 }
 
+export function sheetAnalyticsCacheKey(
+  tenantId: string,
+  planId: string,
+  scopeResponsibleId?: string,
+): string {
+  return `sheet:analytics:${tenantId}:${planId}:${scopeResponsibleId ?? 'all'}`;
+}
+
+export function sessionCacheKey(userId: string): string {
+  return `auth:session:${userId}`;
+}
+
+export function subscriptionCacheKey(tenantId: string): string {
+  return `billing:sub:${tenantId}`;
+}
+
 export function sheetJobLockKey(tenantId: string): string {
   return `sheet:job-lock:${tenantId}`;
+}
+
+export async function invalidateSheetCaches(tenantId: string, planId: string): Promise<void> {
+  await cacheDel(
+    sheetRowCountCacheKey(tenantId, planId),
+    sheetAnalyticsCacheKey(tenantId, planId),
+  );
 }
 
 export async function invalidateSheetRowCountCache(
   tenantId: string,
   planId: string,
 ): Promise<void> {
-  // Chave sem scope (gestor) — scopes de operacional expiram pelo TTL.
-  await cacheDel(sheetRowCountCacheKey(tenantId, planId));
+  await invalidateSheetCaches(tenantId, planId);
+}
+
+export async function invalidateSessionCache(userId: string): Promise<void> {
+  await cacheDel(sessionCacheKey(userId));
+}
+
+export async function invalidateSubscriptionCache(tenantId: string): Promise<void> {
+  await cacheDel(subscriptionCacheKey(tenantId));
 }

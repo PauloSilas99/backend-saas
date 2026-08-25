@@ -4,6 +4,7 @@ import { container } from 'tsyringe';
 import { getRedisConnection } from '@config/redis';
 import { logger } from '@shared/logger';
 import { runWithTenant } from '@shared/tenancy/tenant-context';
+import { toJobFailure } from '@shared/errors/job-error';
 import { SheetsService } from './sheets.service';
 import {
   SHEET_JOB_TYPES,
@@ -45,18 +46,22 @@ export function startSheetJobsWorker(): Worker {
           bypass: data.actor.role === Role.PLATFORM_ADMIN,
         },
         async () => {
-          switch (job.name) {
-            case SHEET_JOB_TYPES.PARSE:
-              return handleParse(job as Job<SheetParseJobData>);
-            case SHEET_JOB_TYPES.IMPORT:
-              return handleImport(job as Job<SheetImportJobData>);
-            default:
-              throw new Error(`Tipo de job desconhecido: ${job.name}`);
+          try {
+            switch (job.name) {
+              case SHEET_JOB_TYPES.PARSE:
+                return await handleParse(job as Job<SheetParseJobData>);
+              case SHEET_JOB_TYPES.IMPORT:
+                return await handleImport(job as Job<SheetImportJobData>);
+              default:
+                throw new Error(`Tipo de job desconhecido: ${job.name}`);
+            }
+          } catch (err) {
+            throw toJobFailure(err);
           }
         },
       );
     },
-    { connection: getRedisConnection(), concurrency: 2 },
+    { connection: getRedisConnection(), concurrency: 1 },
   );
 
   worker.on('failed', (job, err) => {

@@ -26,7 +26,9 @@ const envSchema = z.object({
   STRIPE_WEBHOOK_SECRET: z.string().optional().default(''),
   ASAAS_API_KEY: z.string().optional().default(''),
   ASAAS_WEBHOOK_TOKEN: z.string().optional().default(''),
-  UPLOAD_MAX_SIZE_MB: z.coerce.number().default(50),
+  UPLOAD_MAX_SIZE_MB: z.coerce.number().default(10),
+  DB_POOL_MAX: z.coerce.number().int().min(1).max(20).default(8),
+  DB_STATEMENT_TIMEOUT_MS: z.coerce.number().int().min(1000).default(15_000),
   UPLOAD_DIR: z.string().default('uploads'),
   REDIS_URL: z.string().default('redis://localhost:6379'),
   /** URL pública do front (links de verificação / reset). */

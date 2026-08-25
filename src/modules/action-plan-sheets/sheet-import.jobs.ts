@@ -2,6 +2,7 @@ import { Queue, Job } from 'bullmq';
 import { randomUUID } from 'crypto';
 import { getRedisConnection } from '@config/redis';
 import { NotFoundError } from '@shared/errors/AppError';
+import { parseJobFailure } from '@shared/errors/job-error';
 import type { AuthUser } from '@/types/auth';
 import type { ImportFromParseInput } from '@modules/action-plans/action-plans.schemas';
 import type { SheetParseMeta } from './sheet-parse.store';
@@ -42,11 +43,19 @@ export type SheetParseJobResult = {
   columnCount: number;
 };
 
+export type SheetImportIssue = {
+  line?: number;
+  message: string;
+  code?: 'QUOTA_EXCEEDED' | 'IMPORT_TRUNCATED' | 'COLUMN_QUOTA' | 'ROW_ERROR';
+};
+
 export type SheetImportJobResult = {
   planId: string;
   imported: number;
   skipped: number;
-  issues: Array<{ line?: number; message: string }>;
+  truncated: boolean;
+  quotaReached: boolean;
+  issues: SheetImportIssue[];
 };
 
 export type SheetJob = {
@@ -57,6 +66,7 @@ export type SheetJob = {
   status: SheetJobStatus;
   progress: SheetJobProgress;
   error?: string;
+  errorCode?: string;
   result?: SheetParseJobResult | SheetImportJobResult;
   createdAt: string;
 };
@@ -146,6 +156,7 @@ async function toSheetJob(
   const state = await job.getState();
   const progress = normalizeProgress(job.progress, job.name === SHEET_JOB_TYPES.IMPORT ? 'import' : 'parse');
   const result = job.returnvalue as SheetParseJobResult | SheetImportJobResult | undefined;
+  const failure = job.failedReason ? parseJobFailure(job.failedReason) : undefined;
 
   return {
     jobId: String(job.id),
@@ -154,7 +165,8 @@ async function toSheetJob(
     type: job.name === SHEET_JOB_TYPES.IMPORT ? 'import' : 'parse',
     status: mapBullState(state),
     progress,
-    error: job.failedReason || undefined,
+    error: failure?.message,
+    errorCode: failure?.code,
     result,
     createdAt: new Date(job.timestamp).toISOString(),
   };

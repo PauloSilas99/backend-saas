@@ -1,5 +1,6 @@
 import { NextFunction, Request, Response } from 'express';
-import { AppError } from '@shared/errors/AppError';
+import { Prisma } from '@prisma/client';
+import { AppError, ConflictError } from '@shared/errors/AppError';
 import { logger } from '@shared/logger';
 import { ZodError } from 'zod';
 
@@ -16,6 +17,19 @@ export function errorHandler(
         code: err.code,
         message: err.message,
         details: err.details,
+      },
+    });
+    return;
+  }
+
+  if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+    const conflict = new ConflictError('Já existe um registro com estes dados.');
+    res.status(conflict.statusCode).json({
+      success: false,
+      error: {
+        code: conflict.code,
+        message: conflict.message,
+        details: err.meta,
       },
     });
     return;
@@ -50,7 +64,7 @@ export function errorHandler(
       error: {
         code: 'PAYLOAD_TOO_LARGE',
         message:
-          'Arquivo ou payload muito grande. Divida a planilha em partes menores ou tente novamente.',
+          'Arquivo ou payload acima do limite deste ambiente (1 MB de JSON ou 10 MB de planilha). Importe pelo upload de arquivo.',
       },
     });
     return;

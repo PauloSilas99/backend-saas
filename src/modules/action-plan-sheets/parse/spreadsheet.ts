@@ -4,7 +4,7 @@ import readline from 'readline';
 import ExcelJS from 'exceljs';
 import * as XLSX from 'xlsx';
 import { ValidationError } from '@shared/errors/AppError';
-import { MAX_IMPORT_ROWS, MAX_TRAILING_EMPTY_ROWS } from './imports.constants';
+import { MAX_IMPORT_ROWS, MAX_TRAILING_EMPTY_ROWS } from './constants';
 import {
   cellToString,
   detectHeaderRowIndex,
@@ -287,7 +287,7 @@ export async function streamSpreadsheetFile(
   return streamWithSheetJs(filePath, handlers, headerRowIndex, options.columnCount);
 }
 
-/** Compatível com o módulo legado /imports (materializa as linhas). */
+/** Lê o arquivo inteiro em memória — só para testes e CSV pequenos. */
 export async function parseSpreadsheetFile(filePath: string): Promise<ParsedSpreadsheet> {
   const rows: ParsedSpreadsheet['rows'] = [];
   let headers: string[] = [];

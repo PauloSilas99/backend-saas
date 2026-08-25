@@ -75,6 +75,14 @@ export class ColumnsRepository {
     });
   }
 
+  async stripCellKey(actionPlanId: string, columnId: string) {
+    await this.prisma.$executeRaw`
+      UPDATE action_plan_rows
+      SET cells = COALESCE(cells, '{}'::jsonb) - ${columnId}
+      WHERE action_plan_id = ${actionPlanId}
+    `;
+  }
+
   async hardDeletePlanColumns(actionPlanId: string) {
     await this.prisma.actionColumn.deleteMany({ where: { actionPlanId } });
   }

@@ -9,6 +9,27 @@ describe('column-semantics', () => {
     ).toBe(ColumnSemanticRole.DUE_DATE);
     expect(
       inferSemanticRole({
+        name: 'prazo_acoes_de_melhoria_ou_implementacao',
+        label: 'PRAZO (AÇÕES DE MELHORIA OU IMPLEMENTAÇÃO)',
+        fieldType: ColumnFieldType.DATE,
+      }),
+    ).toBe(ColumnSemanticRole.DUE_DATE);
+    expect(
+      inferSemanticRole({
+        name: 'acoes',
+        label: 'AÇÕES / MEDIDA(S) DE CONTROLE',
+        fieldType: ColumnFieldType.LONG_TEXT,
+      }),
+    ).toBe(ColumnSemanticRole.TITLE);
+    expect(
+      inferSemanticRole({
+        name: 'data_criacao',
+        label: 'DATA CRIAÇÃO',
+        fieldType: ColumnFieldType.DATE,
+      }),
+    ).toBe(ColumnSemanticRole.NONE);
+    expect(
+      inferSemanticRole({
         name: 'responsavel',
         label: 'Responsável',
         fieldType: ColumnFieldType.TEXT,

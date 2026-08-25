@@ -3,6 +3,7 @@ import { PrismaPg } from '@prisma/adapter-pg';
 import { Pool } from 'pg';
 import { env } from './env';
 import { applyTenantExtension } from '@shared/tenancy/prisma-tenant';
+import { PRODUCT_LIMITS } from '@shared/limits/product-limits';
 
 const globalForPrisma = globalThis as unknown as {
   prisma?: PrismaClient;
@@ -14,6 +15,10 @@ const pool =
   new Pool({
     connectionString: env.DATABASE_URL,
     ssl: { rejectUnauthorized: false },
+    max: env.DB_POOL_MAX ?? PRODUCT_LIMITS.poolMax,
+    idleTimeoutMillis: 10_000,
+    connectionTimeoutMillis: 8_000,
+    options: `-c statement_timeout=${env.DB_STATEMENT_TIMEOUT_MS ?? PRODUCT_LIMITS.statementTimeoutMs}`,
   });
 
 const adapter = new PrismaPg(pool);

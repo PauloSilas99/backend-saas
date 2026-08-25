@@ -12,7 +12,7 @@ import {
   type SpreadsheetPeekRow,
   type SpreadsheetStreamHandlers,
   type SpreadsheetStreamOptions,
-} from '@modules/imports/imports.parser';
+} from './parse/spreadsheet';
 
 export const PARSE_SAMPLE_ROWS = 50;
 export const PARSE_DISTINCT_CAP = 80;

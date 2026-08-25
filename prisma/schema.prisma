@@ -138,6 +138,8 @@ model User {
   /** Contato WhatsApp informado no cadastro (somente dígitos / E.164 preferível). */
   whatsapp        String?   @map("whatsapp")
   isActive        Boolean   @default(true) @map("is_active")
+  /** Admin da plataforma — não é membership de empresa. */
+  isPlatformAdmin Boolean   @default(false) @map("is_platform_admin")
   emailVerifiedAt DateTime? @map("email_verified_at")
   tokenVersion    Int       @default(0) @map("token_version")
   createdAt       DateTime  @default(now()) @map("created_at")
@@ -232,6 +234,8 @@ model Membership {
   tenantId  String   @map("tenant_id")
   role      Role
   isActive  Boolean  @default(true) @map("is_active")
+  /** Gráficos da planilha por actionPlanId — JSON pequeno (~12 specs). */
+  sheetCharts Json   @default("{}") @map("sheet_charts")
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
@@ -351,6 +355,8 @@ model ActionPlanRow {
   completedAt     DateTime?      @map("completed_at")
   responsibleName String?        @map("responsible_name")
   unitName        String?        @map("unit_name")
+  /** Valores das colunas da planilha, chave = columnId. Substitui o EAV action_field_values. */
+  cells           Json           @default("{}")
   metadata        Json?
   deletedAt       DateTime?      @map("deleted_at")
   createdAt       DateTime       @default(now()) @map("created_at")
@@ -360,11 +366,12 @@ model ActionPlanRow {
   unit        Unit?           @relation(fields: [unitId], references: [id])
   responsible User?           @relation("AssignedRows", fields: [responsibleId], references: [id])
   histories   ActionHistory[]
-  fieldValues ActionFieldValue[]
   risks       Risk[]
   calendarOverlays CalendarActionOverlay[]
 
   @@unique([actionPlanId, externalKey])
+  @@index([actionPlanId, deletedAt, createdAt])
+  @@index([actionPlanId, dueDate])
   @@index([status])
   @@index([priority])
   @@index([dueDate])
@@ -410,7 +417,6 @@ model ActionColumn {
   tenant     Tenant                @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   actionPlan ActionPlan            @relation(fields: [actionPlanId], references: [id], onDelete: Cascade)
   deletedBy  User?                 @relation("ColumnDeletedBy", fields: [deletedById], references: [id])
-  values     ActionFieldValue[]
   histories  ActionColumnHistory[]
 
   @@unique([actionPlanId, name])
@@ -432,22 +438,6 @@ model ActionColumnHistory {
 
   @@index([columnId, createdAt])
   @@map("action_column_histories")
-}
-
-model ActionFieldValue {
-  id          String   @id @default(uuid())
-  actionRowId String   @map("action_row_id")
-  columnId    String   @map("column_id")
-  value       Json?
-  createdAt   DateTime @default(now()) @map("created_at")
-  updatedAt   DateTime @updatedAt @map("updated_at")
-
-  actionRow ActionPlanRow @relation(fields: [actionRowId], references: [id], onDelete: Cascade)
-  column    ActionColumn  @relation(fields: [columnId], references: [id], onDelete: Cascade)
-
-  @@unique([actionRowId, columnId])
-  @@index([columnId])
-  @@map("action_field_values")
 }
 
 model Risk {

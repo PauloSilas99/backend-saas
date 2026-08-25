@@ -122,14 +122,18 @@ export class UsersRepository {
 
   listAll(q?: string) {
     return this.prisma.user.findMany({
-      where: q
-        ? {
-            OR: [
-              { name: { contains: q, mode: 'insensitive' } },
-              { email: { contains: q, mode: 'insensitive' } },
-            ],
-          }
-        : undefined,
+      where: {
+        isPlatformAdmin: false,
+        memberships: { none: { role: Role.PLATFORM_ADMIN } },
+        ...(q
+          ? {
+              OR: [
+                { name: { contains: q, mode: 'insensitive' } },
+                { email: { contains: q, mode: 'insensitive' } },
+              ],
+            }
+          : {}),
+      },
       include: {
         memberships: {
           include: { tenant: { select: { id: true, name: true } } },

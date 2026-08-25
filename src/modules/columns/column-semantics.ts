@@ -8,10 +8,19 @@ function normalize(value: string): string {
     .replace(/[^a-z0-9]+/g, '_');
 }
 
-const TITLE_KEYS = ['title', 'titulo', 'acao_corretiva', 'registro', 'acao'];
+const TITLE_KEYS = ['title', 'titulo', 'acao_corretiva', 'registro'];
 const STATUS_KEYS = ['status', 'situacao'];
 const PRIORITY_KEYS = ['prioridade', 'priority'];
-const DUE_KEYS = ['data_fim', 'prazo', 'due_date', 'duedate', 'vencimento', 'data_limite', 'deadline'];
+const DUE_KEYS = [
+  'data_fim',
+  'prazo',
+  'due_date',
+  'duedate',
+  'vencimento',
+  'data_limite',
+  'deadline',
+  'data_conclusao',
+];
 const ASSIGNEE_KEYS = ['responsavel', 'responsible', 'assignee', 'owner', 'executor'];
 
 function matches(haystack: string, keys: string[]): boolean {
@@ -35,12 +44,11 @@ export function inferSemanticRole(input: {
   if (matches(blob, ASSIGNEE_KEYS) || input.fieldType === ColumnFieldType.USER) {
     return ColumnSemanticRole.ASSIGNEE;
   }
-  if (matches(blob, TITLE_KEYS)) return ColumnSemanticRole.TITLE;
+  if (matches(blob, TITLE_KEYS) || /(^|_)(acao|acoes)($|_)/.test(blob)) {
+    return ColumnSemanticRole.TITLE;
+  }
   if (matches(blob, STATUS_KEYS)) return ColumnSemanticRole.STATUS;
   if (matches(blob, PRIORITY_KEYS)) return ColumnSemanticRole.PRIORITY;
-  if (input.fieldType === ColumnFieldType.DATE && matches(blob, ['data'])) {
-    return ColumnSemanticRole.DUE_DATE;
-  }
   return ColumnSemanticRole.NONE;
 }
 

@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import { container } from 'tsyringe';
+import { ValidationError } from '@shared/errors/AppError';
 import { ActionPlansService } from '@modules/action-plans/action-plans.service';
 import { SheetsService } from './sheets.service';
 
@@ -163,11 +164,7 @@ export class SheetsController {
   async parseUpload(req: Request, res: Response, next: NextFunction) {
     try {
       if (!req.file) {
-        res.status(400).json({
-          success: false,
-          error: { code: 'VALIDATION_ERROR', message: 'Envie o arquivo no campo "file".' },
-        });
-        return;
+        throw new ValidationError('Envie o arquivo no campo "file".');
       }
       const service = container.resolve(SheetsService);
       const data = await service.enqueueParseUpload(req.user!, req.file);
@@ -232,10 +229,60 @@ export class SheetsController {
     }
   }
 
+  async getMyCharts(req: Request, res: Response, next: NextFunction) {
+    try {
+      const service = container.resolve(SheetsService);
+      const data = await service.getMyCharts(req.user!, req.params.id);
+      res.json({ success: true, data });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async saveMyCharts(req: Request, res: Response, next: NextFunction) {
+    try {
+      const service = container.resolve(SheetsService);
+      const data = await service.saveMyCharts(req.user!, req.params.id, req.body);
+      res.json({ success: true, data });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async getChartSeries(req: Request, res: Response, next: NextFunction) {
+    try {
+      const service = container.resolve(SheetsService);
+      const data = await service.getChartSeries(req.user!, req.params.id, req.body);
+      res.json({ success: true, data });
+    } catch (error) {
+      next(error);
+    }
+  }
+
   async deleteBlankRows(req: Request, res: Response, next: NextFunction) {
     try {
       const service = container.resolve(SheetsService);
       const data = await service.deleteBlankRows(req.user!, req.params.id);
+      res.json({ success: true, data });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async duplicateRow(req: Request, res: Response, next: NextFunction) {
+    try {
+      const service = container.resolve(SheetsService);
+      const data = await service.duplicateRow(req.user!, req.params.id, req.params.rowId);
+      res.status(201).json({ success: true, data });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async removeRow(req: Request, res: Response, next: NextFunction) {
+    try {
+      const service = container.resolve(SheetsService);
+      const data = await service.removeRow(req.user!, req.params.id, req.params.rowId);
       res.json({ success: true, data });
     } catch (error) {
       next(error);

@@ -38,13 +38,20 @@ export class NotFoundError extends AppError {
 }
 
 export class ConflictError extends AppError {
-  constructor(message = 'Conflito de dados') {
-    super(message, 409, 'CONFLICT');
+  constructor(message = 'Conflito de dados', code = 'CONFLICT') {
+    super(message, 409, code);
   }
 }
 
 export class ValidationError extends AppError {
   constructor(message = 'Dados inválidos', details?: unknown) {
     super(message, 422, 'VALIDATION_ERROR', details);
+  }
+}
+
+/** Teto do ambiente (linhas, colunas, arquivo) — não é bug de validação de campo. */
+export class QuotaError extends AppError {
+  constructor(message: string, details?: unknown) {
+    super(message, 422, 'QUOTA_EXCEEDED', details);
   }
 }

@@ -24,6 +24,17 @@ import {
   UpdateMeInput,
   VerifyEmailInput,
 } from './auth.schemas';
+import {
+  cacheGetJson,
+  cacheSetJson,
+  invalidateSessionCache,
+  sessionCacheKey,
+} from '@config/redis-cache';
+import { PRODUCT_LIMITS } from '@shared/limits/product-limits';
+import {
+  PLATFORM_ACTOR_MEMBERSHIP_ID,
+  PLATFORM_ACTOR_TENANT_ID,
+} from '@shared/auth/platform-scope';
 
 interface TokenPair {
   accessToken: string;
@@ -130,6 +141,23 @@ export class AuthService {
       );
     }
 
+    if (
+      user.isPlatformAdmin ||
+      user.memberships.some((m) => m.role === Role.PLATFORM_ADMIN)
+    ) {
+      const tokens = await this.issuePlatformAdminTokens(user);
+      await this.auditService.log({
+        userId: user.id,
+        action: 'auth.login',
+        resource: 'user',
+        resourceId: user.id,
+      });
+      return {
+        user: this.sanitizeUser(user, Role.PLATFORM_ADMIN, null),
+        ...tokens,
+      };
+    }
+
     let membership = user.memberships[0];
     if (input.tenantSlug) {
       membership =
@@ -182,6 +210,13 @@ export class AuthService {
 
     await this.authRepository.revokeRefreshToken(stored.id);
 
+    if (
+      stored.user.isPlatformAdmin ||
+      stored.user.memberships.some((m) => m.role === Role.PLATFORM_ADMIN)
+    ) {
+      return this.issuePlatformAdminTokens(stored.user);
+    }
+
     const preferredTenantId = input.tenantId ?? stored.tenantId ?? undefined;
     const membership =
       (preferredTenantId
@@ -211,6 +246,7 @@ export class AuthService {
       }
     } else {
       await this.authRepository.revokeAllUserTokens(userId);
+      await invalidateSessionCache(userId);
     }
 
     await this.auditService.log({
@@ -227,6 +263,24 @@ export class AuthService {
     const user = await this.authRepository.findUserById(actor.id);
     if (!user || !user.isActive) {
       throw new UnauthorizedError();
+    }
+
+    if (
+      user.isPlatformAdmin ||
+      user.memberships.some((m) => m.role === Role.PLATFORM_ADMIN)
+    ) {
+      const tokens = await this.issuePlatformAdminTokens(user);
+      await this.auditService.log({
+        tenantId: input.tenantId,
+        userId: user.id,
+        action: 'auth.switch-tenant',
+        resource: 'tenant',
+        resourceId: input.tenantId,
+      });
+      return {
+        user: this.sanitizeUser(user, Role.PLATFORM_ADMIN, null),
+        ...tokens,
+      };
     }
 
     const membership = user.memberships.find((m) => m.tenantId === input.tenantId);
@@ -262,6 +316,18 @@ export class AuthService {
     const user = await this.authRepository.findUserById(userId);
     if (!user) {
       throw new UnauthorizedError();
+    }
+
+    if (
+      user.isPlatformAdmin ||
+      user.memberships.some((m) => m.role === Role.PLATFORM_ADMIN)
+    ) {
+      return {
+        ...this.sanitizeUser(user, Role.PLATFORM_ADMIN, null),
+        emailVerifiedAt: user.emailVerifiedAt,
+        tenant: null,
+        memberships: [],
+      };
     }
 
     const membership = user.memberships.find((m) => m.tenantId === tenantId);
@@ -422,6 +488,7 @@ export class AuthService {
     await this.authRepository.markAuthTokenUsed(stored.id);
     await this.authRepository.updatePassword(stored.userId, passwordHash);
     await this.authRepository.revokeAllUserTokens(stored.userId);
+    await invalidateSessionCache(stored.userId);
 
     await this.auditService.log({
       userId: stored.userId,
@@ -437,9 +504,20 @@ export class AuthService {
     sub: string;
     tokenVersion: number;
   }): Promise<boolean> {
-    const user = await this.authRepository.findUserById(payload.sub);
-    if (!user || !user.isActive) return false;
-    return user.tokenVersion === payload.tokenVersion;
+    const cached = await cacheGetJson<{ v: number; a: boolean }>(sessionCacheKey(payload.sub));
+    if (cached) {
+      return cached.a && cached.v === payload.tokenVersion;
+    }
+
+    const user = await this.authRepository.findSessionState(payload.sub);
+    if (!user) return false;
+
+    await cacheSetJson(
+      sessionCacheKey(payload.sub),
+      { v: user.tokenVersion, a: user.isActive },
+      PRODUCT_LIMITS.sessionCacheTtlSec,
+    );
+    return user.isActive && user.tokenVersion === payload.tokenVersion;
   }
 
   private async issueEmailVerification(userId: string, email: string) {
@@ -475,6 +553,23 @@ export class AuthService {
     return { token: rawToken, devUrl: verifyUrl };
   }
 
+  private async issuePlatformAdminTokens(user: {
+    id: string;
+    email: string;
+    name: string;
+    tokenVersion: number;
+  }): Promise<TokenPair> {
+    return this.issueTokens({
+      id: user.id,
+      email: user.email,
+      name: user.name,
+      tokenVersion: user.tokenVersion,
+      tenantId: PLATFORM_ACTOR_TENANT_ID,
+      role: Role.PLATFORM_ADMIN,
+      membershipId: PLATFORM_ACTOR_MEMBERSHIP_ID,
+    });
+  }
+
   private async issueTokens(user: {
     id: string;
     email: string;
@@ -504,7 +599,7 @@ export class AuthService {
 
     await this.authRepository.createRefreshToken({
       userId: user.id,
-      tenantId: user.tenantId,
+      tenantId: user.role === Role.PLATFORM_ADMIN ? undefined : user.tenantId,
       tokenHash: hashToken(refreshToken),
       expiresAt,
     });
@@ -541,7 +636,7 @@ export class AuthService {
       emailVerifiedAt?: Date | null;
     },
     role: Role,
-    tenantId: string,
+    tenantId: string | null,
   ) {
     return {
       id: user.id,

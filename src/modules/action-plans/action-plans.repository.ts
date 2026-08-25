@@ -6,8 +6,18 @@ import {
   PrismaClient,
 } from '@prisma/client';
 import { setTransactionTenant } from '@shared/tenancy/prisma-tenant';
-import { isBlankPlanRow } from '@shared/helpers/plan-row-blank';
+import { isBlankPlanRow, AUTO_COLUMN_NAMES } from '@shared/helpers/plan-row-blank';
 import { ListActionsQuery } from './action-plans.schemas';
+import {
+  mapWorkbookAnalytics,
+  type SheetAnalyticsResult,
+} from './workbook-analytics';
+import {
+  buildCells,
+  cellsToFieldValues,
+  mergeCells,
+} from './row-cells';
+import type { UserChartSlice, UserChartSpec } from '@modules/action-plan-sheets/user-charts';
 
 @injectable()
 export class ActionPlansRepository {
@@ -25,21 +35,14 @@ export class ActionPlansRepository {
     });
   }
 
+  /** Meta do plano — nunca carrega linhas (planilhas grandes). */
   findPlan(id: string, tenantId: string) {
     return this.prisma.actionPlan.findFirst({
       where: { id, tenantId },
       include: {
         unit: true,
         owner: { select: { id: true, name: true, email: true } },
-        rows: {
-          where: { deletedAt: null },
-          include: {
-            responsible: { select: { id: true, name: true, email: true } },
-            unit: true,
-            fieldValues: { include: { column: true } },
-          },
-          orderBy: { createdAt: 'desc' },
-        },
+        _count: { select: { rows: { where: { deletedAt: null } } } },
       },
     });
   }
@@ -128,85 +131,24 @@ export class ActionPlansRepository {
     return this.prisma.$transaction(async (tx) => {
       await setTransactionTenant(tx, input.tenantId);
       const created: Array<{ id: string }> = [];
-      const fieldValues: Array<{
-        actionRowId: string;
-        columnId: string;
-        value: Prisma.InputJsonValue;
-      }> = [];
-      const histories: Array<{
-        actionRowId: string;
-        actorId: string;
-        toStatus: ActionStatus;
-        comment: string;
-      }> = [];
 
       for (let i = 0; i < input.rows.length; i += 1) {
         const row = await tx.actionPlanRow.create({
-          data: input.rows[i],
+          data: {
+            ...input.rows[i],
+            cells: buildCells(input.values[i], input.columnByKey),
+          },
           select: { id: true },
         });
         created.push(row);
-        for (const [key, raw] of Object.entries(input.values[i] ?? {})) {
-          const column = input.columnByKey.get(key);
-          if (!column || raw == null || raw === '') continue;
-          fieldValues.push({
-            actionRowId: row.id,
-            columnId: column.id,
-            value: raw as Prisma.InputJsonValue,
-          });
-        }
-        histories.push({
-          actionRowId: row.id,
-          actorId: input.actorId,
-          toStatus: input.rows[i].status ?? ActionStatus.PENDING,
-          comment: 'Importado da planilha',
-        });
       }
 
-      if (fieldValues.length > 0) {
-        await tx.actionFieldValue.createMany({ data: fieldValues, skipDuplicates: true });
-      }
-      if (histories.length > 0) {
-        await tx.actionHistory.createMany({ data: histories });
-      }
       return created;
     });
   }
 
-  async createFieldValuesBatch(
-    values: Array<{
-      actionRowId: string;
-      columnId: string;
-      value: Prisma.InputJsonValue;
-    }>,
-    chunkSize = 500,
-  ) {
-    for (let i = 0; i < values.length; i += chunkSize) {
-      const slice = values.slice(i, i + chunkSize);
-      await this.prisma.actionFieldValue.createMany({
-        data: slice,
-        skipDuplicates: true,
-      });
-    }
-  }
-
-  async createHistoryBatch(
-    entries: Array<{
-      actionRowId: string;
-      actorId: string;
-      toStatus: ActionStatus;
-      comment: string;
-    }>,
-    chunkSize = 500,
-  ) {
-    for (let i = 0; i < entries.length; i += chunkSize) {
-      const slice = entries.slice(i, i + chunkSize);
-      await this.prisma.actionHistory.createMany({ data: slice });
-    }
-  }
-
-  findRow(id: string, tenantId: string, includeDeleted = false) {
-    return this.prisma.actionPlanRow.findFirst({
+  async findRow(id: string, tenantId: string, includeDeleted = false) {
+    const row = await this.prisma.actionPlanRow.findFirst({
       where: {
         id,
         actionPlan: { tenantId },
@@ -216,7 +158,6 @@ export class ActionPlansRepository {
         actionPlan: true,
         responsible: { select: { id: true, name: true, email: true } },
         unit: true,
-        fieldValues: { include: { column: true } },
         histories: {
           orderBy: { createdAt: 'desc' },
           take: 50,
@@ -224,6 +165,8 @@ export class ActionPlansRepository {
         },
       },
     });
+    if (!row) return null;
+    return { ...row, fieldValues: cellsToFieldValues(row.cells) };
   }
 
   updateRow(id: string, data: Prisma.ActionPlanRowUpdateInput) {
@@ -254,23 +197,16 @@ export class ActionPlansRepository {
       byKey.set(col.name, col);
     }
 
-    for (const [key, raw] of Object.entries(values)) {
-      const column = byKey.get(key);
-      if (!column) continue;
-      await this.prisma.actionFieldValue.upsert({
-        where: {
-          actionRowId_columnId: { actionRowId, columnId: column.id },
-        },
-        create: {
-          actionRowId,
-          columnId: column.id,
-          value: raw as Prisma.InputJsonValue,
-        },
-        update: {
-          value: raw as Prisma.InputJsonValue,
-        },
-      });
-    }
+    const row = await this.prisma.actionPlanRow.findFirst({
+      where: { id: actionRowId, actionPlan: { tenantId } },
+      select: { cells: true },
+    });
+    if (!row) return;
+
+    await this.prisma.actionPlanRow.update({
+      where: { id: actionRowId },
+      data: { cells: mergeCells(row.cells, values, byKey) },
+    });
   }
 
   findPrimaryPlan(tenantId: string) {
@@ -331,6 +267,20 @@ export class ActionPlansRepository {
     }));
   }
 
+  async hardDeleteRows(ids: string[]) {
+    if (ids.length === 0) return { count: 0 };
+    const BATCH = 500;
+    let count = 0;
+    for (let i = 0; i < ids.length; i += BATCH) {
+      const chunk = ids.slice(i, i + BATCH);
+      const deleted = await this.prisma.actionPlanRow.deleteMany({
+        where: { id: { in: chunk } },
+      });
+      count += deleted.count;
+    }
+    return { count };
+  }
+
   async softDeleteBlankRows(
     actionPlanId: string,
     tenantId: string,
@@ -339,6 +289,16 @@ export class ActionPlansRepository {
     let deleted = 0;
     const pageSize = 2000;
     let skip = 0;
+
+    const autoColumns = await this.prisma.actionColumn.findMany({
+      where: {
+        actionPlanId,
+        deletedAt: null,
+        name: { in: [...AUTO_COLUMN_NAMES] },
+      },
+      select: { id: true },
+    });
+    const autoColumnIds = new Set(autoColumns.map((column) => column.id));
 
     for (;;) {
       const rows = await this.prisma.actionPlanRow.findMany({
@@ -355,7 +315,7 @@ export class ActionPlansRepository {
           dueDate: true,
           responsibleName: true,
           unitName: true,
-          fieldValues: { select: { value: true, column: { select: { name: true } } } },
+          cells: true,
         },
         orderBy: { createdAt: 'asc' },
         skip,
@@ -363,9 +323,11 @@ export class ActionPlansRepository {
       });
       if (rows.length === 0) break;
 
-      const blankIds = rows.filter((row) => isBlankPlanRow(row)).map((row) => row.id);
+      const blankIds = rows
+        .filter((row) => isBlankPlanRow({ ...row, autoColumnIds }))
+        .map((row) => row.id);
       if (blankIds.length > 0) {
-        await this.softDeleteRows(blankIds);
+        await this.hardDeleteRows(blankIds);
         deleted += blankIds.length;
       }
 
@@ -410,72 +372,27 @@ export class ActionPlansRepository {
     };
 
     const skip = (query.page - 1) * query.pageSize;
-    const [items, total] = await Promise.all([
+    const [rows, total] = await Promise.all([
       this.prisma.actionPlanRow.findMany({
         where,
         include: {
           responsible: { select: { id: true, name: true, email: true } },
           unit: true,
-          fieldValues: { include: { column: true } },
         },
         orderBy: [{ createdAt: 'desc' }],
         skip,
         take: query.pageSize,
       }),
-      // Contagem barata (mesmo filtro). Sem segundo full-scan de fieldValues.
       this.prisma.actionPlanRow.count({ where }),
     ]);
 
-    return { items, total };
-  }
-
-  /** Carrega linhas em páginas para agregações server-side (analytics). */
-  async iteratePlanRowsForAnalytics(
-    actionPlanId: string,
-    tenantId: string,
-    pageSize = 1000,
-    scopeResponsibleId?: string,
-  ) {
-    const pages: Array<{
-      id: string;
-      title: string;
-      description: string | null;
-      status: ActionStatus;
-      priority: ActionPriority;
-      dueDate: Date | null;
-      completedAt: Date | null;
-      fieldValues: Array<{ value: Prisma.JsonValue; column: { name: string } }>;
-    }> = [];
-
-    let skip = 0;
-    for (;;) {
-      const batch = await this.prisma.actionPlanRow.findMany({
-        where: {
-          actionPlanId,
-          deletedAt: null,
-          actionPlan: { tenantId },
-          ...(scopeResponsibleId ? { responsibleId: scopeResponsibleId } : {}),
-        },
-        select: {
-          id: true,
-          title: true,
-          description: true,
-          status: true,
-          priority: true,
-          dueDate: true,
-          completedAt: true,
-          fieldValues: { select: { value: true, column: { select: { name: true } } } },
-        },
-        orderBy: { createdAt: 'asc' },
-        skip,
-        take: pageSize,
-      });
-      if (batch.length === 0) break;
-      pages.push(...batch);
-      skip += pageSize;
-      if (batch.length < pageSize) break;
-    }
-    return pages;
+    return {
+      items: rows.map((row) => ({
+        ...row,
+        fieldValues: cellsToFieldValues(row.cells),
+      })),
+      total,
+    };
   }
 
   /** Apaga linhas e colunas do workbook para um replace real. */
@@ -545,6 +462,7 @@ export class ActionPlansRepository {
         unit: true,
       },
       orderBy: { dueDate: 'asc' },
+      take: 200,
     });
   }
 
@@ -602,29 +520,6 @@ export class ActionPlansRepository {
     return { items, total };
   }
 
-  listCalendar(tenantId: string, from: Date, to: Date, responsibleId?: string) {
-    return this.prisma.actionPlanRow.findMany({
-      where: {
-        deletedAt: null,
-        dueDate: { gte: from, lte: to },
-        actionPlan: { tenantId },
-        ...(responsibleId ? { responsibleId } : {}),
-      },
-      select: {
-        id: true,
-        title: true,
-        status: true,
-        priority: true,
-        dueDate: true,
-        responsibleId: true,
-        responsibleName: true,
-        unitName: true,
-        actionPlan: { select: { id: true, title: true } },
-      },
-      orderBy: { dueDate: 'asc' },
-    });
-  }
-
   addHistory(data: {
     actionRowId: string;
     actorId?: string;
@@ -648,4 +543,339 @@ export class ActionPlansRepository {
   duplicateRow(sourceId: string, data: Prisma.ActionPlanRowCreateInput) {
     return this.prisma.actionPlanRow.create({ data });
   }
+
+  /**
+   * Agrega KPIs no Postgres — só o resumo sai do Neon (egress).
+   */
+  async getWorkbookAnalytics(
+    actionPlanId: string,
+    tenantId: string,
+    scopeResponsibleId?: string,
+  ): Promise<SheetAnalyticsResult> {
+    const kpiRows = await this.prisma.$queryRaw<
+      Array<{
+        total: number;
+        concluidas: number;
+        on_time_completed: number;
+        atrasadas: number;
+        a_vencer_7d: number;
+        no_prazo: number;
+        cancelados: number;
+      }>
+    >`
+      WITH cols AS (
+        SELECT
+          MAX(id::text) FILTER (WHERE name = 'status') AS status_id,
+          MAX(id::text) FILTER (WHERE name = 'status_final') AS status_final_id,
+          COALESCE(
+            MAX(id::text) FILTER (WHERE name IN ('data_fim', 'prazo')),
+            MAX(id::text) FILTER (WHERE name LIKE 'prazo%'),
+            MAX(id::text) FILTER (WHERE name IN ('data_conclusao', 'data_prox_verificacao')),
+            MAX(id::text) FILTER (WHERE semantic_role = 'DUE_DATE'::"ColumnSemanticRole"),
+            MAX(id::text) FILTER (
+              WHERE field_type = 'DATE'::"ColumnFieldType"
+                AND (name LIKE 'data_%' OR name LIKE 'prazo%')
+            )
+          ) AS due_id
+        FROM action_columns
+        WHERE action_plan_id = ${actionPlanId}
+          AND deleted_at IS NULL
+      ),
+      scoped AS (
+        SELECT r.status::text AS native_status, r.due_date, r.cells,
+               cols.status_id, cols.status_final_id, cols.due_id
+        FROM action_plan_rows r
+        INNER JOIN action_plans p ON p.id = r.action_plan_id
+        CROSS JOIN cols
+        WHERE r.action_plan_id = ${actionPlanId}
+          AND p.tenant_id = ${tenantId}
+          AND r.deleted_at IS NULL
+          ${scopeResponsibleId ? Prisma.sql`AND r.responsible_id = ${scopeResponsibleId}` : Prisma.sql``}
+      ),
+      enriched AS (
+        SELECT
+          LOWER(COALESCE(NULLIF(TRIM(s.cells ->> s.status_id), ''), s.native_status, '')) AS status_l,
+          LOWER(COALESCE(s.cells ->> s.status_final_id, '')) AS status_final_l,
+          COALESCE(
+            s.due_date,
+            CASE
+              WHEN (s.cells ->> s.due_id) ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}'
+                THEN LEFT(s.cells ->> s.due_id, 10)::date::timestamptz
+              ELSE NULL
+            END
+          ) AS due
+        FROM scoped s
+      )
+      SELECT
+        COUNT(*)::int AS total,
+        COUNT(*) FILTER (
+          WHERE status_l LIKE '%conclu%' OR status_l = 'completed' OR status_final_l LIKE 'conclu%'
+        )::int AS concluidas,
+        COUNT(*) FILTER (
+          WHERE (status_l LIKE '%conclu%' OR status_l = 'completed' OR status_final_l LIKE 'conclu%')
+            AND (status_final_l LIKE '%prazo%' OR status_final_l NOT LIKE '%atraso%')
+        )::int AS on_time_completed,
+        COUNT(*) FILTER (
+          WHERE status_l NOT LIKE '%conclu%' AND status_l <> 'completed' AND status_l NOT LIKE '%cancel%'
+            AND due IS NOT NULL AND due < NOW()
+        )::int AS atrasadas,
+        COUNT(*) FILTER (
+          WHERE status_l NOT LIKE '%conclu%' AND status_l <> 'completed'
+            AND due IS NOT NULL AND due >= NOW() AND due <= NOW() + INTERVAL '7 days'
+        )::int AS a_vencer_7d,
+        COUNT(*) FILTER (
+          WHERE status_l NOT LIKE '%conclu%' AND status_l <> 'completed' AND status_l NOT LIKE '%cancel%'
+            AND status_l NOT LIKE '%atras%'
+            AND due IS NOT NULL AND due::date >= CURRENT_DATE
+        )::int AS no_prazo,
+        COUNT(*) FILTER (
+          WHERE status_l LIKE '%cancel%' OR status_final_l = 'cancelada'
+        )::int AS cancelados
+      FROM enriched
+    `;
+
+    const groupRows = await this.prisma.$queryRaw<
+      Array<{ bucket: string; label: string; cnt: number }>
+    >`
+      WITH cols AS (
+        SELECT
+          MAX(id::text) FILTER (WHERE name = 'status') AS status_id,
+          MAX(id::text) FILTER (WHERE name IN ('prioridade', 'priority')) AS priority_id,
+          MAX(id::text) FILTER (WHERE name IN ('indicador', 'programa', 'tema')) AS indicador_id,
+          MAX(id::text) FILTER (WHERE name = 'unidade') AS unidade_id,
+          MAX(id::text) FILTER (WHERE name = 'responsavel') AS responsavel_id
+        FROM action_columns
+        WHERE action_plan_id = ${actionPlanId}
+          AND deleted_at IS NULL
+      ),
+      scoped AS (
+        SELECT r.id, r.status::text AS native_status, r.priority::text AS native_priority,
+               r.responsible_name, r.unit_name, r.cells,
+               cols.status_id, cols.priority_id, cols.indicador_id, cols.unidade_id, cols.responsavel_id
+        FROM action_plan_rows r
+        INNER JOIN action_plans p ON p.id = r.action_plan_id
+        CROSS JOIN cols
+        WHERE r.action_plan_id = ${actionPlanId}
+          AND p.tenant_id = ${tenantId}
+          AND r.deleted_at IS NULL
+          ${scopeResponsibleId ? Prisma.sql`AND r.responsible_id = ${scopeResponsibleId}` : Prisma.sql``}
+      ),
+      labeled AS (
+        SELECT s.id, 'status'::text AS bucket,
+               COALESCE(NULLIF(TRIM(s.cells ->> s.status_id), ''), s.native_status) AS label
+        FROM scoped s
+        UNION ALL
+        SELECT s.id, 'prioridade',
+               COALESCE(NULLIF(TRIM(s.cells ->> s.priority_id), ''), s.native_priority)
+        FROM scoped s
+        UNION ALL
+        SELECT s.id, 'indicador', NULLIF(TRIM(s.cells ->> s.indicador_id), '')
+        FROM scoped s
+        UNION ALL
+        SELECT s.id, 'unidade',
+               COALESCE(NULLIF(TRIM(s.cells ->> s.unidade_id), ''), NULLIF(s.unit_name, ''))
+        FROM scoped s
+        UNION ALL
+        SELECT s.id, 'responsavel',
+               COALESCE(NULLIF(TRIM(s.cells ->> s.responsavel_id), ''), NULLIF(s.responsible_name, ''))
+        FROM scoped s
+      ),
+      counted AS (
+        SELECT bucket, label, COUNT(*)::int AS cnt,
+               ROW_NUMBER() OVER (PARTITION BY bucket ORDER BY COUNT(*) DESC) AS rn
+        FROM labeled
+        WHERE label IS NOT NULL AND TRIM(label) <> ''
+        GROUP BY bucket, label
+      )
+      SELECT bucket, label, cnt FROM counted WHERE rn <= 40
+    `;
+
+    return mapWorkbookAnalytics(kpiRows[0], groupRows);
+  }
+
+  getMembershipSheetCharts(membershipId: string) {
+    return this.prisma.membership.findUnique({
+      where: { id: membershipId },
+      select: { id: true, sheetCharts: true },
+    });
+  }
+
+  updateMembershipSheetCharts(membershipId: string, sheetCharts: Record<string, unknown>) {
+    return this.prisma.membership.update({
+      where: { id: membershipId },
+      data: { sheetCharts: sheetCharts as Prisma.InputJsonValue },
+    });
+  }
+
+  async bulkUpsertSheetRows(
+    tenantId: string,
+    actionPlanId: string,
+    rows: Array<{
+      id?: string;
+      title: string;
+      description?: string;
+      status?: ActionStatus;
+      priority?: ActionPriority;
+      dueDate?: string;
+      responsibleId?: string;
+      unitId?: string;
+      values?: Record<string, unknown>;
+    }>,
+  ) {
+    if (rows.length === 0) return;
+
+    const columns = await this.prisma.actionColumn.findMany({
+      where: { actionPlanId, tenantId, deletedAt: null },
+      select: { id: true, name: true },
+    });
+    const byKey = new Map<string, { id: string }>();
+    for (const col of columns) {
+      byKey.set(col.id, col);
+      byKey.set(col.name, col);
+    }
+
+    await this.prisma.$transaction(
+      async (tx) => {
+        await setTransactionTenant(tx, tenantId);
+        for (const input of rows) {
+          const values = input.values ?? {};
+          if (input.id) {
+            const existing = await tx.actionPlanRow.findFirst({
+              where: { id: input.id, actionPlanId },
+              select: { id: true, cells: true },
+            });
+            if (existing) {
+              await tx.actionPlanRow.update({
+                where: { id: existing.id },
+                data: {
+                  deletedAt: null,
+                  title: input.title,
+                  description: input.description,
+                  status: input.status,
+                  priority: input.priority,
+                  dueDate: input.dueDate ? new Date(input.dueDate) : undefined,
+                  responsibleId: input.responsibleId,
+                  unitId: input.unitId,
+                  cells: mergeCells(existing.cells, values, byKey),
+                },
+              });
+              continue;
+            }
+          }
+
+          await tx.actionPlanRow.create({
+            data: {
+              id: input.id,
+              actionPlanId,
+              title: input.title,
+              description: input.description,
+              status: input.status,
+              priority: input.priority,
+              dueDate: input.dueDate ? new Date(input.dueDate) : undefined,
+              responsibleId: input.responsibleId,
+              unitId: input.unitId,
+              cells: buildCells(values, byKey),
+            },
+          });
+        }
+      },
+      { timeout: 60_000, maxWait: 8_000 },
+    );
+  }
+
+  async getChartSeries(
+    actionPlanId: string,
+    tenantId: string,
+    spec: UserChartSpec,
+    scopeResponsibleId?: string,
+  ): Promise<UserChartSlice[]> {
+    const columns = await this.prisma.actionColumn.findMany({
+      where: { actionPlanId, tenantId, deletedAt: null },
+      select: { id: true, name: true },
+    });
+    const category = columns.find(
+      (col) => col.name === spec.columnKey || col.id === spec.columnKey,
+    );
+    const nativeExpr =
+      spec.columnKey === 'status'
+        ? Prisma.sql`COALESCE(NULLIF(TRIM(r.cells ->> ${category?.id ?? ''}), ''), r.status::text)`
+        : spec.columnKey === 'prioridade' || spec.columnKey === 'priority'
+          ? Prisma.sql`COALESCE(NULLIF(TRIM(r.cells ->> ${category?.id ?? ''}), ''), r.priority::text)`
+          : spec.columnKey === 'data_fim' || spec.columnKey === 'prazo'
+            ? Prisma.sql`COALESCE(NULLIF(TRIM(r.cells ->> ${category?.id ?? ''}), ''), to_char(r.due_date, 'YYYY-MM-DD'))`
+            : spec.columnKey === 'responsavel'
+              ? Prisma.sql`COALESCE(NULLIF(TRIM(r.cells ->> ${category?.id ?? ''}), ''), NULLIF(r.responsible_name, ''))`
+              : spec.columnKey === 'unidade'
+                ? Prisma.sql`COALESCE(NULLIF(TRIM(r.cells ->> ${category?.id ?? ''}), ''), NULLIF(r.unit_name, ''))`
+                : null;
+
+    if (!category && !nativeExpr) return [];
+    const categoryId = category?.id ?? '';
+    const source = nativeExpr ?? Prisma.sql`NULLIF(TRIM(r.cells ->> ${categoryId}), '')`;
+    const valueCol = spec.valueColumnKey
+      ? columns.find((col) => col.name === spec.valueColumnKey || col.id === spec.valueColumnKey)
+      : undefined;
+    const valueId = valueCol?.id;
+    const addValueSql =
+      spec.aggregation === 'sum' && valueId
+        ? Prisma.sql`CASE
+            WHEN (r.cells ->> ${valueId}) ~ '^-?[0-9]+([.,][0-9]+)?$'
+            THEN REPLACE(REPLACE(TRIM(r.cells ->> ${valueId}), ' ', ''), ',', '.')::numeric
+            ELSE 1
+          END`
+        : Prisma.sql`1`;
+    const scopeSql = scopeResponsibleId
+      ? Prisma.sql`AND r.responsible_id = ${scopeResponsibleId}`
+      : Prisma.sql``;
+
+    if (spec.type === 'line') {
+      const rows = await this.prisma.$queryRaw<Array<{ sort_key: string; value: number }>>`
+        SELECT month_key AS sort_key, SUM(add_value)::float AS value
+        FROM (
+          SELECT
+            LEFT(NULLIF(TRIM(${source}), ''), 7) AS month_key,
+            ${addValueSql} AS add_value
+          FROM action_plan_rows r
+          INNER JOIN action_plans p ON p.id = r.action_plan_id
+          WHERE r.action_plan_id = ${actionPlanId}
+            AND p.tenant_id = ${tenantId}
+            AND r.deleted_at IS NULL
+            ${scopeSql}
+            AND NULLIF(TRIM(${source}), '') ~ '^[0-9]{4}-[0-9]{2}'
+        ) months
+        WHERE month_key IS NOT NULL
+        GROUP BY month_key
+        ORDER BY month_key ASC
+        LIMIT 36
+      `;
+      return rows.map((row) => ({
+        sortKey: row.sort_key,
+        label: row.sort_key,
+        value: Number(row.value) || 0,
+      }));
+    }
+
+    const rows = await this.prisma.$queryRaw<Array<{ label: string; value: number }>>`
+      SELECT label, SUM(add_value)::float AS value
+      FROM (
+        SELECT
+          COALESCE(NULLIF(TRIM(${source}), ''), 'Não informado') AS label,
+          ${addValueSql} AS add_value
+        FROM action_plan_rows r
+        INNER JOIN action_plans p ON p.id = r.action_plan_id
+        WHERE r.action_plan_id = ${actionPlanId}
+          AND p.tenant_id = ${tenantId}
+          AND r.deleted_at IS NULL
+          ${scopeSql}
+      ) labeled
+      GROUP BY label
+      ORDER BY value DESC
+      LIMIT 12
+    `;
+    return rows.map((row) => ({
+      label: row.label,
+      value: Number(row.value) || 0,
+    }));
+  }
 }
+

@@ -25,9 +25,9 @@ export async function subscriptionGate(
     }
 
     const billingService = container.resolve(BillingService);
-    const subscription = await billingService.getSubscription(req.user.tenantId);
+    const status = await billingService.getCachedSubscriptionStatus(req.user.tenantId);
 
-    if (!subscription || !ACTIVE_STATUSES.includes(subscription.status)) {
+    if (!status || !ACTIVE_STATUSES.includes(status)) {
       throw new ForbiddenError(
         'Assinatura inativa. Regularize o pagamento para continuar usando o sistema.',
       );
