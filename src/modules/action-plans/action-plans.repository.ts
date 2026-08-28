@@ -297,6 +297,14 @@ export class ActionPlansRepository {
     });
   }
 
+  async listExternalKeys(actionPlanId: string): Promise<Array<string | null>> {
+    const rows = await this.prisma.actionPlanRow.findMany({
+      where: { actionPlanId, deletedAt: null },
+      select: { externalKey: true },
+    });
+    return rows.map((row) => row.externalKey);
+  }
+
   async allocateExternalKey(actionPlanId: string): Promise<string> {
     const existing = await this.prisma.actionPlanRow.findMany({
       where: { actionPlanId },

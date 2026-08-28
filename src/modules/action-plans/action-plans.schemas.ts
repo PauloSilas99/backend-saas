@@ -101,6 +101,7 @@ export const importSheetJsonSchema = z.object({
   options: z
     .object({
       replaceExisting: z.boolean().optional(),
+      upsertByExternalKey: z.boolean().optional(),
       /** Continua importando no plano já criado (envio em chunks). */
       planId: z.string().uuid().optional(),
       /** Não recria/atualiza colunas (chunks seguintes). */

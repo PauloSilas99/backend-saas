@@ -46,7 +46,24 @@ export type SheetParseJobResult = {
 export type SheetImportIssue = {
   line?: number;
   message: string;
-  code?: 'QUOTA_EXCEEDED' | 'IMPORT_TRUNCATED' | 'COLUMN_QUOTA' | 'ROW_ERROR';
+  severity?: 'ERROR' | 'WARNING';
+  code?:
+    | 'QUOTA_EXCEEDED'
+    | 'IMPORT_TRUNCATED'
+    | 'COLUMN_QUOTA'
+    | 'ROW_ERROR'
+    | 'TITLE_REQUIRED'
+    | 'INVALID_DATE'
+    | 'MISSING_DUE_DATE'
+    | 'VALUE_OUT_OF_VOCABULARY'
+    | 'DUPLICATE_EXTERNAL_KEY'
+    | 'ROW_MISSING_FROM_FILE';
+};
+
+export type SheetImportHeaderReport = {
+  matched: Array<{ header: string; canonicalKey: string; column: string }>;
+  unmatched: Array<{ header: string; colIndex: number }>;
+  missing: Array<{ canonicalKey: string; label: string }>;
 };
 
 export type SheetImportJobResult = {
@@ -56,6 +73,7 @@ export type SheetImportJobResult = {
   truncated: boolean;
   quotaReached: boolean;
   issues: SheetImportIssue[];
+  headerReport?: SheetImportHeaderReport;
 };
 
 export type SheetJob = {

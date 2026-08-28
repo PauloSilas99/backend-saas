@@ -20,6 +20,7 @@ import { isBlankPlanRow } from '@shared/helpers/plan-row-blank';
 import { ActionPlansRepository } from '@modules/action-plans/action-plans.repository';
 import { assignCanonicalKeys, pickCanonicalKey } from '@modules/columns/canonical-backfill';
 import { parseDateOnly } from '@modules/action-plans/project-row';
+import { buildHeaderReport, missingRowKeys, validateRowValues } from './import-report';
 import { CompaniesRepository } from '@modules/companies/companies.repository';
 import {
   buildWorkbook,
@@ -452,7 +453,11 @@ export class SheetsService {
       await this.plansRepo.updatePlan(plan.id, { title: input.title });
     }
 
-    if (input.options?.replaceExisting && !input.options?.skipColumnSync) {
+    if (
+      input.options?.replaceExisting &&
+      !input.options?.skipColumnSync &&
+      !input.options?.upsertByExternalKey
+    ) {
       await this.plansRepo.replaceWorkbookContent(plan.id, tenantId);
     }
 
@@ -865,6 +870,13 @@ export class SheetsService {
       if (assignment.canonicalKey) nameByCanonical.set(assignment.canonicalKey, assignment.id);
     }
 
+    const headerReport = buildHeaderReport(columns.map((col) => col.sourceHeader || col.label));
+    const seenExternalKeys = new Set<string>();
+    const targetPlan = await this.plansRepo.findPrimaryPlan(tenantId);
+    const keysBeforeImport = targetPlan
+      ? await this.plansRepo.listExternalKeys(targetPlan.id)
+      : [];
+
     let planId: string | undefined;
     let imported = 0;
     let skipped = 0;
@@ -920,9 +932,40 @@ export class SheetsService {
 
       const canonicalDue = parseDateOnly(canonical('prazo'));
 
+      const canonicalValues: Record<string, string> = {};
+      for (const [key, name] of nameByCanonical) {
+        canonicalValues[key] = values[name]?.trim() ?? '';
+      }
+
+      const externalKey = canonical('id');
+      let blocked = false;
+
+      const pushIssue = (issue: SheetImportIssue) => {
+        if (issues.length < IMPORT_ISSUE_CAP) issues.push({ line, ...issue });
+      };
+
+      if (externalKey) {
+        if (seenExternalKeys.has(externalKey)) {
+          blocked = true;
+          pushIssue({
+            severity: 'ERROR',
+            code: 'DUPLICATE_EXTERNAL_KEY',
+            message: `ID repetido no arquivo: "${externalKey}".`,
+          });
+        } else {
+          seenExternalKeys.add(externalKey);
+        }
+      }
+
+      for (const issue of validateRowValues(canonicalValues)) {
+        if (issue.severity === 'ERROR') blocked = true;
+        pushIssue(issue);
+      }
+
       return {
+        blocked,
         title: title.slice(0, 200),
-        externalKey: canonical('id'),
+        externalKey,
         description: pickMappedValue(values, ['descricao_fato', 'descricao', 'description']),
         status: canonical('status_atual') ?? pickMappedValue(values, ['status']),
         priority: canonical('prioridade') ?? pickMappedValue(values, ['prioridade', 'priority']),
@@ -945,6 +988,7 @@ export class SheetsService {
         rows,
         options: {
           replaceExisting: firstChunk,
+          upsertByExternalKey: nameByCanonical.has('id'),
           planId,
           skipColumnSync: !firstChunk,
         },
@@ -987,7 +1031,7 @@ export class SheetsService {
           globalLine += 1;
           const mapped = mapValues(padRow(row.values, width));
           const importRow = toImportRow(mapped, row.line);
-          if (isImportRowBlank(importRow)) {
+          if (importRow.blocked || isImportRowBlank(importRow)) {
             skipped += 1;
             continue;
           }
@@ -1014,7 +1058,7 @@ export class SheetsService {
             globalLine += 1;
             const mapped = mapValues(dense);
             const importRow = toImportRow(mapped, lineNumber);
-            if (isImportRowBlank(importRow)) {
+            if (importRow.blocked || isImportRowBlank(importRow)) {
               skipped += 1;
               return;
             }
@@ -1044,7 +1088,7 @@ export class SheetsService {
             return toImportRow(mapValues([], raw), globalLine);
           })
           .filter((row) => {
-            if (isImportRowBlank(row)) {
+            if (row.blocked || isImportRowBlank(row)) {
               skipped += 1;
               return false;
             }
@@ -1072,6 +1116,17 @@ export class SheetsService {
       });
     }
 
+    if (planId) {
+      for (const key of missingRowKeys(keysBeforeImport, [...seenExternalKeys])) {
+        if (issues.length >= IMPORT_ISSUE_CAP) break;
+        issues.push({
+          severity: 'WARNING',
+          code: 'ROW_MISSING_FROM_FILE',
+          message: `A ação ${key} não veio no arquivo e foi mantida na base.`,
+        });
+      }
+    }
+
     void deleteSheetParse(actor.tenantId, input.parseId);
 
     return {
@@ -1081,6 +1136,7 @@ export class SheetsService {
       truncated: fileTruncated || quotaReached,
       quotaReached,
       issues,
+      headerReport,
     };
   }
 
