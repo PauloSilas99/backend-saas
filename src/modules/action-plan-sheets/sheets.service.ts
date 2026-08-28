@@ -68,6 +68,7 @@ import {
   invalidateSheetCaches,
   sheetAnalyticsCacheKey,
   sheetJobLockKey,
+  sheetMetaCacheKey,
   sheetRowCountCacheKey,
 } from '@config/redis-cache';
 import { TenantQuotaService } from '@shared/limits/tenant-quota.service';
@@ -90,6 +91,7 @@ import {
 
 const IMPORT_FROM_PARSE_BATCH = 500;
 const IMPORT_ISSUE_CAP = 100;
+const SUMMARY_PAGE_SIZE = 50;
 
 const STATUS_MAP: Record<string, ActionStatus> = {
   pending: ActionStatus.PENDING,
@@ -113,6 +115,20 @@ const PRIORITY_MAP: Record<string, ActionPriority> = {
   critica: ActionPriority.CRITICAL,
 };
 
+type PlanMeta = Awaited<ReturnType<ActionPlansRepository['findPlanMeta']>>;
+type SerializedPlanMeta = Omit<NonNullable<PlanMeta>, 'createdAt' | 'updatedAt'> & {
+  createdAt: string;
+  updatedAt: string;
+};
+
+function revivePlanMeta(raw: SerializedPlanMeta): NonNullable<PlanMeta> {
+  return {
+    ...raw,
+    createdAt: new Date(raw.createdAt),
+    updatedAt: new Date(raw.updatedAt),
+  };
+}
+
 @injectable()
 export class SheetsService {
   constructor(
@@ -135,16 +151,30 @@ export class SheetsService {
    */
   async getSummary(actor: AuthUser, id: string) {
     if (isPlatformAdmin(actor)) throw new ForbiddenError();
-    const plan = await this.plansRepo.findPlanMeta(id, actor.tenantId);
+    const plan = await this.getCachedPlanMeta(actor.tenantId, id);
     if (!plan) throw new NotFoundError('Planilha não encontrada');
     const columns = await this.columnsRepo.listActive(id);
     const scopeResponsibleId = isOperacional(actor) ? actor.id : undefined;
     const rowCount = await this.getCachedRowCount(actor.tenantId, id, scopeResponsibleId);
+
+    const rows =
+      rowCount > 0
+        ? (
+            await this.plansRepo.listPlanRows(
+              id,
+              actor.tenantId,
+              { page: 1, pageSize: SUMMARY_PAGE_SIZE },
+              scopeResponsibleId,
+            )
+          ).items
+        : [];
+
     return {
       ...plan,
       columns,
       rowCount,
-      rows: [] as unknown[],
+      rows,
+      rowsPageSize: SUMMARY_PAGE_SIZE,
     };
   }
 
@@ -1037,8 +1067,19 @@ export class SheetsService {
 
   private async assertSheet(actor: AuthUser, sheetId: string) {
     if (isPlatformAdmin(actor)) throw new ForbiddenError();
-    const plan = await this.plansRepo.findPlanMeta(sheetId, actor.tenantId);
+    const plan = await this.getCachedPlanMeta(actor.tenantId, sheetId);
     if (!plan) throw new NotFoundError('Planilha não encontrada');
+    return plan;
+  }
+
+  private async getCachedPlanMeta(tenantId: string, planId: string) {
+    const key = sheetMetaCacheKey(tenantId, planId);
+    const cached = await cacheGetJson<SerializedPlanMeta>(key);
+    if (cached) return revivePlanMeta(cached);
+
+    const plan = await this.plansRepo.findPlanMeta(planId, tenantId);
+    if (!plan) return null;
+    await cacheSetJson(key, plan, SHEET_META_CACHE_TTL_SEC);
     return plan;
   }
 

@@ -139,6 +139,10 @@ export function sheetAnalyticsCacheKey(
   return `sheet:analytics:${tenantId}:${planId}:${scopeResponsibleId ?? 'all'}`;
 }
 
+export function sheetMetaCacheKey(tenantId: string, planId: string): string {
+  return `sheet:meta:${tenantId}:${planId}`;
+}
+
 export function sessionCacheKey(userId: string): string {
   return `auth:session:${userId}`;
 }
@@ -155,6 +159,7 @@ export async function invalidateSheetCaches(tenantId: string, planId: string): P
   await cacheDel(
     sheetRowCountCacheKey(tenantId, planId),
     sheetAnalyticsCacheKey(tenantId, planId),
+    sheetMetaCacheKey(tenantId, planId),
   );
 }
 
