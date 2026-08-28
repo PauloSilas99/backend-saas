@@ -25,10 +25,19 @@ import {
   updateActionRowSchema,
 } from '@modules/action-plans/action-plans.schemas';
 import { createColumnSchema, updateColumnSchema } from '@modules/columns/columns.schemas';
+import { EvidencesController } from '@modules/evidences/evidences.controller';
+import { MAX_EVIDENCE_BYTES } from '@modules/evidences/evidence-file';
+import { attachEvidenceSchema } from '@modules/action-plans/action-plans.schemas';
 import { SheetsController } from './sheets.controller';
 
 const controller = new SheetsController();
+const evidences = new EvidencesController();
 const router = Router();
+
+const evidenceUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: MAX_EVIDENCE_BYTES },
+});
 
 const parseUpload = multer({
   storage: multer.diskStorage({
@@ -179,6 +188,34 @@ router.patch(
   '/:id/rows/:rowId',
   validate({ body: updateActionRowSchema }),
   (req, res, next) => controller.updateRow(req, res, next),
+);
+
+router.get(
+  '/:id/rows/:rowId/evidence',
+  (req, res, next) => evidences.list(req, res, next),
+);
+
+router.post(
+  '/:id/rows/:rowId/evidence',
+  evidenceUpload.single('file'),
+  (req, res, next) => evidences.attachFile(req, res, next),
+);
+
+router.post(
+  '/:id/rows/:rowId/evidence/value',
+  validate({ body: attachEvidenceSchema }),
+  (req, res, next) => evidences.attachValue(req, res, next),
+);
+
+router.get(
+  '/:id/rows/:rowId/evidence/:evidenceId/download',
+  (req, res, next) => evidences.download(req, res, next),
+);
+
+router.delete(
+  '/:id/rows/:rowId/evidence/:evidenceId',
+  roleGuard(Role.GERENTE, Role.GESTOR),
+  (req, res, next) => evidences.remove(req, res, next),
 );
 
 router.post(

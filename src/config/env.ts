@@ -30,10 +30,11 @@ const envSchema = z.object({
   DB_POOL_MAX: z.coerce.number().int().min(1).max(20).default(8),
   DB_STATEMENT_TIMEOUT_MS: z.coerce.number().int().min(1000).default(15_000),
   UPLOAD_DIR: z.string().default('uploads'),
+  CLOUDINARY_CLOUD_NAME: z.string().optional(),
+  CLOUDINARY_API_KEY: z.string().optional(),
+  CLOUDINARY_API_SECRET: z.string().optional(),
   REDIS_URL: z.string().default('redis://localhost:6379'),
-  /** URL pública do front (links de verificação / reset). */
   FRONTEND_URL: z.string().default('http://localhost:3000'),
-  /** SMTP opcional — sem isso, e-mails vão para o log (dev). */
   SMTP_HOST: z.string().optional().default(''),
   SMTP_PORT: z.coerce.number().default(587),
   SMTP_USER: z.string().optional().default(''),

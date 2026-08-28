@@ -11,6 +11,7 @@ const TENANT_ID_MODELS = new Set<string>([
   'CalendarActivity',
   'CalendarOverride',
   'CalendarActionOverlay',
+  'ActionEvidence',
   'Subscription',
   'Payment',
   'AuditLog',

@@ -28,10 +28,21 @@ export const updateActionRowSchema = createActionRowSchema.partial().extend({
   comment: z.string().max(2000).optional(),
 });
 
+const structuredEvidenceSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('LINK'), value: z.string().url().max(2000) }),
+  z.object({ kind: z.literal('TEXTO'), value: z.string().min(1).max(5000) }),
+  z.object({ kind: z.literal('ARQUIVO'), evidenceId: z.string().uuid() }),
+]);
+
 export const resolveActionSchema = z.object({
-  evidence: z.string().max(5000).optional(),
+  evidence: z.union([z.string().max(5000), structuredEvidenceSchema]).optional(),
   completedAt: z.string().datetime().optional(),
   comment: z.string().max(2000).optional(),
+});
+
+export const attachEvidenceSchema = z.object({
+  kind: z.enum(['LINK', 'TEXTO']),
+  value: z.string().min(1).max(5000),
 });
 
 export const bulkSheetSchema = z.object({

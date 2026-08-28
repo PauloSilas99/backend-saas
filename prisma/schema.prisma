@@ -123,6 +123,12 @@ enum CalendarActivityStatus {
   CANCELED
 }
 
+enum EvidenceKind {
+  LINK
+  TEXTO
+  ARQUIVO
+}
+
 enum CalendarOverrideType {
   BLOCKED
   NOTE
@@ -161,6 +167,7 @@ model User {
   calendarActivitiesAssigned CalendarActivity[] @relation("CalendarActivityAssignee")
   calendarOverridesCreated CalendarOverride[] @relation("CalendarOverrideCreator")
   calendarActionOverlays CalendarActionOverlay[] @relation("CalendarActionOverlayOwner")
+  evidences        ActionEvidence[]   @relation("EvidenceCreator")
 
   @@map("users")
 }
@@ -207,6 +214,7 @@ model Tenant {
   calendarActivities CalendarActivity[]
   calendarOverrides  CalendarOverride[]
   calendarActionOverlays CalendarActionOverlay[]
+  evidences    ActionEvidence[]
 
   @@map("tenants")
 }
@@ -368,6 +376,7 @@ model ActionPlanRow {
   histories   ActionHistory[]
   risks       Risk[]
   calendarOverlays CalendarActionOverlay[]
+  evidences        ActionEvidence[]
 
   @@unique([actionPlanId, externalKey])
   @@index([actionPlanId, deletedAt, createdAt])
@@ -615,6 +624,28 @@ model CalendarActionOverlay {
   @@index([tenantId, userId])
   @@index([actionRowId])
   @@map("calendar_action_overlays")
+}
+
+model ActionEvidence {
+  id          String       @id @default(uuid())
+  tenantId    String       @map("tenant_id")
+  actionRowId String       @map("action_row_id")
+  kind        EvidenceKind
+  value       String?      @db.Text
+  publicId    String?      @map("public_id")
+  fileName    String?      @map("file_name")
+  mimeType    String?      @map("mime_type")
+  sizeBytes   Int?         @map("size_bytes")
+  createdById String       @map("created_by_id")
+  createdAt   DateTime     @default(now()) @map("created_at")
+
+  tenant    Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  actionRow ActionPlanRow @relation(fields: [actionRowId], references: [id], onDelete: Cascade)
+  createdBy User          @relation("EvidenceCreator", fields: [createdById], references: [id])
+
+  @@index([actionRowId])
+  @@index([tenantId])
+  @@map("action_evidences")
 }
 
 model AuditLog {

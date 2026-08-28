@@ -15,7 +15,9 @@ import {
 import { TenantPolicyService } from '@shared/policies/tenant-policy.service';
 import { TenantQuotaService } from '@shared/limits/tenant-quota.service';
 import { invalidateSheetDataCaches } from '@config/redis-cache';
+import { EvidencesRepository } from '@modules/evidences/evidences.repository';
 import { ActionPlansRepository } from './action-plans.repository';
+import { encodeEvidenceRef, normalizeEvidenceInput } from './evidence-ref';
 import {
   ApproveActionInput,
   CreateActionPlanInput,
@@ -47,6 +49,7 @@ export class ActionPlansService {
     @inject(TenantQuotaService)
     private readonly tenantQuota: TenantQuotaService,
     @inject(AuditService) private readonly auditService: AuditService,
+    @inject(EvidencesRepository) private readonly evidencesRepo: EvidencesRepository,
   ) {}
 
   async listPlans(actor: AuthUser) {
@@ -365,15 +368,48 @@ export class ActionPlansService {
       },
     });
 
+    const cellUpdates: Record<string, string> = {};
+
     const dataConclusao = await this.actionPlansRepository.findCanonicalColumn(
       row.actionPlanId,
       'data_conclusao',
     );
     if (dataConclusao) {
+      cellUpdates[dataConclusao.id] = completedAt.toISOString().slice(0, 10);
+    }
+
+    const evidenceInput = normalizeEvidenceInput(input.evidence);
+    if (evidenceInput) {
+      const evidenceId =
+        evidenceInput.kind === 'ARQUIVO'
+          ? await this.assertEvidenceBelongsToRow(actor, rowId, evidenceInput.evidenceId)
+          : (
+              await this.evidencesRepo.create({
+                tenantId: actor.tenantId,
+                actionRowId: rowId,
+                kind: evidenceInput.kind,
+                value: evidenceInput.value,
+                createdById: actor.id,
+              })
+            ).id;
+
+      const evidenciaColumn = await this.actionPlansRepository.findCanonicalColumn(
+        row.actionPlanId,
+        'evidencia',
+      );
+      if (evidenciaColumn) {
+        cellUpdates[evidenciaColumn.id] =
+          evidenceInput.kind === 'ARQUIVO'
+            ? encodeEvidenceRef({ kind: 'ARQUIVO', evidenceId })
+            : encodeEvidenceRef(evidenceInput);
+      }
+    }
+
+    if (Object.keys(cellUpdates).length > 0) {
       await this.actionPlansRepository.upsertFieldValues(
         rowId,
         actor.tenantId,
-        { [dataConclusao.id]: completedAt.toISOString().slice(0, 10) },
+        cellUpdates,
         row.actionPlanId,
       );
     }
@@ -495,6 +531,18 @@ export class ActionPlansService {
 
     await this.invalidateRowCaches(actor.tenantId, row.actionPlanId);
     return updated;
+  }
+
+  private async assertEvidenceBelongsToRow(
+    actor: AuthUser,
+    rowId: string,
+    evidenceId: string,
+  ): Promise<string> {
+    const evidence = await this.evidencesRepo.findById(evidenceId, actor.tenantId);
+    if (!evidence || evidence.actionRowId !== rowId) {
+      throw new NotFoundError('Evidência não encontrada para esta ação');
+    }
+    return evidence.id;
   }
 
   private assertNotPlatformAdminContent(actor: AuthUser) {
