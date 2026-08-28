@@ -4,12 +4,13 @@ import { PrismaClient, Role, SubscriptionStatus } from '@prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { Pool } from 'pg';
 import bcrypt from 'bcryptjs';
+import { pgSslFor } from '../src/config/pg-ssl';
 
 dotenv.config();
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false },
+  ssl: pgSslFor(process.env.DATABASE_URL ?? ''),
 });
 const prisma = new PrismaClient({ adapter: new PrismaPg(pool) });
 

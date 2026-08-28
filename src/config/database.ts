@@ -2,6 +2,7 @@ import { PrismaClient } from '@prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { Pool } from 'pg';
 import { env } from './env';
+import { pgSslFor } from './pg-ssl';
 import { applyTenantExtension } from '@shared/tenancy/prisma-tenant';
 import { PRODUCT_LIMITS } from '@shared/limits/product-limits';
 
@@ -14,7 +15,7 @@ const pool =
   globalForPrisma.pgPool ??
   new Pool({
     connectionString: env.DATABASE_URL,
-    ssl: { rejectUnauthorized: false },
+    ssl: pgSslFor(env.DATABASE_URL),
     max: env.DB_POOL_MAX ?? PRODUCT_LIMITS.poolMax,
     idleTimeoutMillis: 10_000,
     connectionTimeoutMillis: 8_000,
