@@ -4,6 +4,9 @@ import { PRODUCT_LIMITS } from '@shared/limits/product-limits';
 export type UserChartType = 'pie' | 'bar' | 'line';
 export type UserChartAggregation = 'count' | 'sum';
 
+export type UserChartBucket = 'month';
+export type UserChartOrigin = 'default' | 'user';
+
 export type UserChartSpec = {
   id: string;
   title: string;
@@ -11,7 +14,37 @@ export type UserChartSpec = {
   columnKey: string;
   aggregation: UserChartAggregation;
   valueColumnKey?: string;
+  bucket?: UserChartBucket;
+  origin?: UserChartOrigin;
 };
+
+export const DEFAULT_CHARTS: UserChartSpec[] = [
+  {
+    id: 'default-situacao',
+    title: 'Situação das ações',
+    type: 'pie',
+    columnKey: 'status_atual',
+    aggregation: 'count',
+    origin: 'default',
+  },
+  {
+    id: 'default-prazo-mes',
+    title: 'Ações por prazo',
+    type: 'bar',
+    columnKey: 'prazo',
+    aggregation: 'count',
+    bucket: 'month',
+    origin: 'default',
+  },
+  {
+    id: 'default-responsaveis',
+    title: 'Ações por responsável',
+    type: 'bar',
+    columnKey: 'responsavel_solucao',
+    aggregation: 'count',
+    origin: 'default',
+  },
+];
 
 export type UserChartSlice = {
   label: string;
@@ -43,12 +76,16 @@ export function sanitizeUserChartSpec(raw: unknown): UserChartSpec | null {
   const aggregation: UserChartAggregation = raw.aggregation === 'sum' ? 'sum' : 'count';
   if (!id || !title || !columnKey || !type) return null;
   const valueColumnKey = asString(raw.valueColumnKey, 80) ?? undefined;
+  const bucket = raw.bucket === 'month' ? ('month' as const) : undefined;
+  const origin = raw.origin === 'default' ? ('default' as const) : ('user' as const);
   return {
     id,
     title,
     type,
     columnKey,
     aggregation,
+    origin,
+    ...(bucket ? { bucket } : {}),
     ...(aggregation === 'sum' && valueColumnKey ? { valueColumnKey } : {}),
   };
 }
@@ -75,6 +112,15 @@ export function chartsForSheet(
   return sanitizeUserCharts(map[sheetId]);
 }
 
+export function chartsForSheetWithDefaults(
+  raw: Prisma.JsonValue | null | undefined,
+  sheetId: string,
+): UserChartSpec[] {
+  const saved = asChartsMap(raw)[sheetId];
+  if (saved === undefined) return DEFAULT_CHARTS;
+  return sanitizeUserCharts(saved);
+}
+
 export function mergeSheetCharts(
   raw: Prisma.JsonValue | null | undefined,
   sheetId: string,
@@ -82,5 +128,14 @@ export function mergeSheetCharts(
 ): Record<string, unknown> {
   const map = asChartsMap(raw);
   map[sheetId] = charts;
+  return map;
+}
+
+export function removeSheetCharts(
+  raw: Prisma.JsonValue | null | undefined,
+  sheetId: string,
+): Record<string, unknown> {
+  const map = asChartsMap(raw);
+  delete map[sheetId];
   return map;
 }

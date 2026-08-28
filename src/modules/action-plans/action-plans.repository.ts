@@ -961,11 +961,11 @@ export class ActionPlansRepository {
   ): Promise<UserChartSlice[]> {
     const columns = await this.prisma.actionColumn.findMany({
       where: { actionPlanId, tenantId, deletedAt: null },
-      select: { id: true, name: true },
+      select: { id: true, name: true, canonicalKey: true },
     });
-    const category = columns.find(
-      (col) => col.name === spec.columnKey || col.id === spec.columnKey,
-    );
+    const category =
+      columns.find((col) => col.canonicalKey === spec.columnKey) ??
+      columns.find((col) => col.name === spec.columnKey || col.id === spec.columnKey);
     const nativeExpr =
       spec.columnKey === 'status'
         ? Prisma.sql`COALESCE(NULLIF(TRIM(r.cells ->> ${category?.id ?? ''}), ''), r.status::text)`
@@ -981,9 +981,16 @@ export class ActionPlansRepository {
 
     if (!category && !nativeExpr) return [];
     const categoryId = category?.id ?? '';
-    const source = nativeExpr ?? Prisma.sql`NULLIF(TRIM(r.cells ->> ${categoryId}), '')`;
+    const rawSource = nativeExpr ?? Prisma.sql`NULLIF(TRIM(r.cells ->> ${categoryId}), '')`;
+    const source =
+      spec.bucket === 'month'
+        ? Prisma.sql`LEFT(NULLIF(TRIM(${rawSource}), ''), 7)`
+        : rawSource;
     const valueCol = spec.valueColumnKey
-      ? columns.find((col) => col.name === spec.valueColumnKey || col.id === spec.valueColumnKey)
+      ? columns.find((col) => col.canonicalKey === spec.valueColumnKey) ??
+        columns.find(
+          (col) => col.name === spec.valueColumnKey || col.id === spec.valueColumnKey,
+        )
       : undefined;
     const valueId = valueCol?.id;
     const addValueSql =

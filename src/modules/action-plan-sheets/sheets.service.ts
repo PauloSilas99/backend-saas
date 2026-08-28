@@ -92,7 +92,9 @@ import {
 import type { SheetAnalyticsResult } from '@modules/action-plans/workbook-analytics';
 import {
   chartsForSheet,
+  chartsForSheetWithDefaults,
   mergeSheetCharts,
+  removeSheetCharts,
   sanitizeUserCharts,
   type UserChartSlice,
   type UserChartSpec,
@@ -1159,10 +1161,21 @@ export class SheetsService {
     return data;
   }
 
+  async restoreDefaultCharts(actor: AuthUser, sheetId: string) {
+    await this.assertSheet(actor, sheetId);
+    const membership = await this.plansRepo.getMembershipSheetCharts(actor.membershipId);
+    if (!membership) throw new NotFoundError('Vínculo com a empresa não encontrado');
+    await this.plansRepo.updateMembershipSheetCharts(
+      membership.id,
+      removeSheetCharts(membership.sheetCharts, sheetId),
+    );
+    return { charts: chartsForSheetWithDefaults(null, sheetId) };
+  }
+
   async getMyCharts(actor: AuthUser, sheetId: string): Promise<{ charts: UserChartSpec[] }> {
     await this.assertSheet(actor, sheetId);
     const membership = await this.plansRepo.getMembershipSheetCharts(actor.membershipId);
-    return { charts: chartsForSheet(membership?.sheetCharts, sheetId) };
+    return { charts: chartsForSheetWithDefaults(membership?.sheetCharts, sheetId) };
   }
 
   async saveMyCharts(

@@ -113,6 +113,16 @@ export class SheetsController {
     }
   }
 
+  async restoreDefaultCharts(req: Request, res: Response, next: NextFunction) {
+    try {
+      const service = container.resolve(SheetsService);
+      const data = await service.restoreDefaultCharts(req.user!, req.params.id);
+      res.json({ success: true, data });
+    } catch (error) {
+      next(error);
+    }
+  }
+
   async downloadTemplate(req: Request, res: Response, next: NextFunction) {
     try {
       const service = container.resolve(SheetsService);

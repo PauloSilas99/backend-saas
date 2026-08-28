@@ -119,6 +119,11 @@ router.get('/:id/export', (req, res, next) => controller.exportSheet(req, res, n
 
 router.get('/:id/my-charts', (req, res, next) => controller.getMyCharts(req, res, next));
 
+router.delete(
+  '/:id/my-charts',
+  (req, res, next) => controller.restoreDefaultCharts(req, res, next),
+);
+
 router.put(
   '/:id/my-charts',
   validate({ body: saveMyChartsSchema }),

@@ -207,6 +207,8 @@ export const userChartSpecSchema = z.object({
   columnKey: z.string().min(1).max(80),
   aggregation: z.enum(['count', 'sum']).default('count'),
   valueColumnKey: z.string().min(1).max(80).optional(),
+  bucket: z.enum(['month']).optional(),
+  origin: z.enum(['default', 'user']).optional(),
 });
 
 export const saveMyChartsSchema = z.object({
