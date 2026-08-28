@@ -346,7 +346,8 @@ export class ActionPlansService {
     }
 
     const completedAt = input.completedAt ? new Date(input.completedAt) : new Date();
-    const updated = await this.actionPlansRepository.updateRow(rowId, {
+
+    await this.actionPlansRepository.updateRow(rowId, {
       status: ActionStatus.COMPLETED,
       completedAt,
       metadata: {
@@ -355,6 +356,21 @@ export class ActionPlansService {
         resolvedAt: completedAt.toISOString(),
       },
     });
+
+    const dataConclusao = await this.actionPlansRepository.findCanonicalColumn(
+      row.actionPlanId,
+      'data_conclusao',
+    );
+    if (dataConclusao) {
+      await this.actionPlansRepository.upsertFieldValues(
+        rowId,
+        actor.tenantId,
+        { [dataConclusao.id]: completedAt.toISOString().slice(0, 10) },
+        row.actionPlanId,
+      );
+    }
+
+    const updated = await this.actionPlansRepository.findRow(rowId, actor.tenantId);
 
     await this.actionPlansRepository.addHistory({
       actionRowId: rowId,

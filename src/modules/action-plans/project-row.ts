@@ -122,3 +122,51 @@ export function projectRow(input: ProjectRowInput): ProjectedRow {
     statusFinal,
   };
 }
+
+export type NativePatch = Partial<
+  Pick<
+    ProjectedRow,
+    | 'title'
+    | 'status'
+    | 'priority'
+    | 'dueDate'
+    | 'completedAt'
+    | 'responsibleName'
+    | 'unitName'
+  >
+>;
+
+export type ProjectedCells = ProjectedRow & {
+  cells: Record<string, unknown>;
+  nativePatch: NativePatch;
+};
+
+export function projectIntoCells(input: ProjectRowInput): ProjectedCells {
+  const projected = projectRow(input);
+  const cells = { ...input.cells };
+
+  const idOf = (key: string) =>
+    input.columns.find((column) => column.canonicalKey === key)?.id;
+
+  const statusId = idOf('status_atual');
+  if (statusId) cells[statusId] = projected.statusAtual;
+
+  const statusFinalId = idOf('status_final');
+  if (statusFinalId) {
+    if (projected.statusFinal) cells[statusFinalId] = projected.statusFinal;
+    else delete cells[statusFinalId];
+  }
+
+  const nativePatch: NativePatch = {};
+  if (projected.title) nativePatch.title = projected.title;
+  if (idOf('prioridade')) nativePatch.priority = projected.priority;
+  if (idOf('prazo')) nativePatch.dueDate = projected.dueDate;
+  if (idOf('data_conclusao')) nativePatch.completedAt = projected.completedAt;
+  if (idOf('responsavel_solucao')) nativePatch.responsibleName = projected.responsibleName;
+  if (idOf('unidade')) nativePatch.unitName = projected.unitName;
+  if (statusId || idOf('prazo') || idOf('data_conclusao')) {
+    nativePatch.status = projected.status;
+  }
+
+  return { ...projected, cells, nativePatch };
+}

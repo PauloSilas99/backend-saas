@@ -1,6 +1,6 @@
 import { ActionPriority, ActionStatus } from '@prisma/client';
 import { describe, expect, it } from 'vitest';
-import { projectRow } from './project-row';
+import { projectIntoCells, projectRow } from './project-row';
 
 function build(values: Record<string, string>) {
   const columns = Object.keys(values).map((key, i) => ({
@@ -207,5 +207,134 @@ describe('projectRow — colunas fora do catálogo', () => {
       now: NOW,
     });
     expect(result.title).toBe('Instalar sinalização');
+  });
+});
+
+describe('projectIntoCells — write-back de AP e AQ', () => {
+  it('escreve o status derivado de volta na célula de STATUS ATUAL', () => {
+    const { cells, columns } = build({ status_atual: '', prazo: '2020-01-01' });
+    const statusColumnId = columns.find((c) => c.canonicalKey === 'status_atual')!.id;
+
+    const result = projectIntoCells({ cells, columns, now: NOW });
+
+    expect(result.cells[statusColumnId]).toBe('em atraso');
+  });
+
+  it('escreve o status final quando a ação é concluída', () => {
+    const { cells, columns } = build({
+      status_final: '',
+      prazo: '2026-08-10',
+      data_conclusao: '2026-08-20',
+    });
+    const finalColumnId = columns.find((c) => c.canonicalKey === 'status_final')!.id;
+
+    const result = projectIntoCells({ cells, columns, now: NOW });
+
+    expect(result.cells[finalColumnId]).toBe('concluída em atraso');
+  });
+
+  it('remove a célula de status final se a ação volta a ficar aberta', () => {
+    const { cells, columns } = build({
+      status_final: 'concluída no prazo',
+      prazo: '2026-09-15',
+    });
+    const finalColumnId = columns.find((c) => c.canonicalKey === 'status_final')!.id;
+
+    const result = projectIntoCells({ cells, columns, now: NOW });
+
+    expect(result.cells).not.toHaveProperty(finalColumnId);
+  });
+
+  it('preserva as células que não são derivadas', () => {
+    const { cells, columns } = build({ acoes: 'Trocar EPI', prazo: '2026-09-15' });
+    const acoesId = columns.find((c) => c.canonicalKey === 'acoes')!.id;
+
+    const result = projectIntoCells({ cells, columns, now: NOW });
+
+    expect(result.cells[acoesId]).toBe('Trocar EPI');
+  });
+
+  it('não inventa célula quando o plano não tem a coluna de status', () => {
+    const { cells, columns } = build({ acoes: 'Trocar EPI' });
+
+    const result = projectIntoCells({ cells, columns, now: NOW });
+
+    expect(Object.keys(result.cells)).toEqual(Object.keys(cells));
+  });
+
+  it('devolve junto os campos nativos projetados', () => {
+    const { cells, columns } = build({ acoes: 'Trocar EPI', prazo: '2020-01-01' });
+
+    const result = projectIntoCells({ cells, columns, now: NOW });
+
+    expect(result.title).toBe('Trocar EPI');
+    expect(result.status).toBe(ActionStatus.DELAYED);
+  });
+
+  it('não altera o objeto de células recebido', () => {
+    const { cells, columns } = build({ status_atual: '', prazo: '2020-01-01' });
+    const before = JSON.stringify(cells);
+
+    projectIntoCells({ cells, columns, now: NOW });
+
+    expect(JSON.stringify(cells)).toBe(before);
+  });
+});
+
+describe('projectIntoCells — só assume o campo que a planilha realmente tem', () => {
+  it('não devolve prioridade quando o plano não tem a coluna PRIORIDADE', () => {
+    const { cells, columns } = build({ acoes: 'Trocar EPI', prazo: '2026-09-15' });
+
+    const { nativePatch } = projectIntoCells({ cells, columns, now: NOW });
+
+    expect(nativePatch).not.toHaveProperty('priority');
+  });
+
+  it('não devolve prazo quando o plano não tem a coluna PRAZO', () => {
+    const { cells, columns } = build({ acoes: 'Trocar EPI' });
+
+    const { nativePatch } = projectIntoCells({ cells, columns, now: NOW });
+
+    expect(nativePatch).not.toHaveProperty('dueDate');
+  });
+
+  it('não devolve status quando nenhuma coluna que o define existe', () => {
+    const { cells, columns } = build({ acoes: 'Trocar EPI', unidade: 'Norte' });
+
+    const { nativePatch } = projectIntoCells({ cells, columns, now: NOW });
+
+    expect(nativePatch).not.toHaveProperty('status');
+  });
+
+  it('devolve status quando a planilha tem a coluna PRAZO', () => {
+    const { cells, columns } = build({ prazo: '2020-01-01' });
+
+    const { nativePatch } = projectIntoCells({ cells, columns, now: NOW });
+
+    expect(nativePatch.status).toBe(ActionStatus.DELAYED);
+  });
+
+  it('devolve os campos cujas colunas existem', () => {
+    const { cells, columns } = build({
+      acoes: 'Trocar EPI',
+      prioridade: 'alta',
+      responsavel_solucao: 'Ana',
+      unidade: 'Norte',
+    });
+
+    const { nativePatch } = projectIntoCells({ cells, columns, now: NOW });
+
+    expect(nativePatch.title).toBe('Trocar EPI');
+    expect(nativePatch.priority).toBe(ActionPriority.HIGH);
+    expect(nativePatch.responsibleName).toBe('Ana');
+    expect(nativePatch.unitName).toBe('Norte');
+  });
+
+  it('não devolve título quando a coluna AÇÕES existe mas está vazia', () => {
+    const { cells, columns } = build({ acoes: '', prazo: '2026-09-15' });
+
+    const { nativePatch } = projectIntoCells({ cells, columns, now: NOW });
+
+    expect(nativePatch).not.toHaveProperty('title');
   });
 });

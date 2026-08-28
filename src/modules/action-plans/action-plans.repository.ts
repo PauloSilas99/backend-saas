@@ -8,6 +8,7 @@ import {
 import { setTransactionTenant } from '@shared/tenancy/prisma-tenant';
 import { isBlankPlanRow, AUTO_COLUMN_NAMES } from '@shared/helpers/plan-row-blank';
 import { ListActionsQuery } from './action-plans.schemas';
+import { projectIntoCells } from './project-row';
 import {
   mapWorkbookAnalytics,
   type SheetAnalyticsResult,
@@ -191,13 +192,33 @@ export class ActionPlansRepository {
 
     const row = await this.prisma.actionPlanRow.findFirst({
       where: { id: actionRowId, actionPlan: { tenantId } },
-      select: { cells: true },
+      select: { cells: true, status: true, actionPlanId: true },
     });
     if (!row) return;
 
+    const merged = mergeCells(row.cells, values, byKey);
+
+    const canonicalColumns = await this.prisma.actionColumn.findMany({
+      where: {
+        actionPlanId: row.actionPlanId,
+        deletedAt: null,
+        canonicalKey: { not: null },
+      },
+      select: { id: true, canonicalKey: true },
+    });
+
+    const projected = projectIntoCells({
+      cells: merged as Record<string, unknown>,
+      columns: canonicalColumns,
+      currentStatus: row.status,
+    });
+
     await this.prisma.actionPlanRow.update({
       where: { id: actionRowId },
-      data: { cells: mergeCells(row.cells, values, byKey) },
+      data: {
+        cells: projected.cells as Prisma.InputJsonValue,
+        ...projected.nativePatch,
+      },
     });
   }
 
@@ -205,6 +226,13 @@ export class ActionPlansRepository {
     return this.prisma.actionPlan.findFirst({
       where: { tenantId },
       orderBy: { createdAt: 'asc' },
+    });
+  }
+
+  findCanonicalColumn(actionPlanId: string, canonicalKey: string) {
+    return this.prisma.actionColumn.findFirst({
+      where: { actionPlanId, canonicalKey, deletedAt: null },
+      select: { id: true },
     });
   }
 
@@ -740,13 +768,14 @@ export class ActionPlansRepository {
 
     const columns = await this.prisma.actionColumn.findMany({
       where: { actionPlanId, tenantId, deletedAt: null },
-      select: { id: true, name: true },
+      select: { id: true, name: true, canonicalKey: true },
     });
     const byKey = new Map<string, { id: string }>();
     for (const col of columns) {
       byKey.set(col.id, col);
       byKey.set(col.name, col);
     }
+    const canonicalColumns = columns.filter((col) => col.canonicalKey !== null);
 
     await this.prisma.$transaction(
       async (tx) => {
@@ -756,9 +785,14 @@ export class ActionPlansRepository {
           if (input.id) {
             const existing = await tx.actionPlanRow.findFirst({
               where: { id: input.id, actionPlanId },
-              select: { id: true, cells: true },
+              select: { id: true, cells: true, status: true },
             });
             if (existing) {
+              const projected = projectIntoCells({
+                cells: mergeCells(existing.cells, values, byKey) as Record<string, unknown>,
+                columns: canonicalColumns,
+                currentStatus: existing.status,
+              });
               await tx.actionPlanRow.update({
                 where: { id: existing.id },
                 data: {
@@ -770,13 +804,18 @@ export class ActionPlansRepository {
                   dueDate: input.dueDate ? new Date(input.dueDate) : undefined,
                   responsibleId: input.responsibleId,
                   unitId: input.unitId,
-                  cells: mergeCells(existing.cells, values, byKey),
+                  cells: projected.cells as Prisma.InputJsonValue,
+                  ...projected.nativePatch,
                 },
               });
               continue;
             }
           }
 
+          const projectedNew = projectIntoCells({
+            cells: buildCells(values, byKey) as Record<string, unknown>,
+            columns: canonicalColumns,
+          });
           await tx.actionPlanRow.create({
             data: {
               id: input.id,
@@ -788,7 +827,8 @@ export class ActionPlansRepository {
               dueDate: input.dueDate ? new Date(input.dueDate) : undefined,
               responsibleId: input.responsibleId,
               unitId: input.unitId,
-              cells: buildCells(values, byKey),
+              cells: projectedNew.cells as Prisma.InputJsonValue,
+              ...projectedNew.nativePatch,
             },
           });
         }
