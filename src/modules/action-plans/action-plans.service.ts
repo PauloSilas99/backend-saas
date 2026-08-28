@@ -14,6 +14,7 @@ import {
 } from '@shared/helpers/rbac';
 import { TenantPolicyService } from '@shared/policies/tenant-policy.service';
 import { TenantQuotaService } from '@shared/limits/tenant-quota.service';
+import { invalidateSheetDataCaches } from '@config/redis-cache';
 import { ActionPlansRepository } from './action-plans.repository';
 import {
   ApproveActionInput,
@@ -151,6 +152,7 @@ export class ActionPlansService {
       comment: 'Ação criada',
     });
 
+    await this.invalidateRowCaches(actor.tenantId, planId);
     return this.actionPlansRepository.findRow(row.id, actor.tenantId);
   }
 
@@ -210,6 +212,7 @@ export class ActionPlansService {
         toStatus: ActionStatus.IN_PROGRESS,
         comment: input.comment ?? 'Execução iniciada',
       });
+      await this.invalidateRowCaches(actor.tenantId, row.actionPlanId);
       return updated;
     }
 
@@ -253,6 +256,7 @@ export class ActionPlansService {
       });
     }
 
+    await this.invalidateRowCaches(actor.tenantId, row.actionPlanId);
     return this.actionPlansRepository.findRow(rowId, actor.tenantId);
   }
 
@@ -297,6 +301,7 @@ export class ActionPlansService {
       comment: input.comment ?? 'Ação aprovada',
     });
 
+    await this.invalidateRowCaches(actor.tenantId, row.actionPlanId);
     return updated;
   }
 
@@ -326,6 +331,7 @@ export class ActionPlansService {
       comment: input.comment,
     });
 
+    await this.invalidateRowCaches(actor.tenantId, row.actionPlanId);
     return updated;
   }
 
@@ -381,6 +387,7 @@ export class ActionPlansService {
       metadata: { evidence: input.evidence },
     });
 
+    await this.invalidateRowCaches(actor.tenantId, row.actionPlanId);
     return updated;
   }
 
@@ -418,6 +425,7 @@ export class ActionPlansService {
       metadata: { sourceRowId: row.id },
     });
 
+    await this.invalidateRowCaches(actor.tenantId, row.actionPlanId);
     return copy;
   }
 
@@ -446,7 +454,12 @@ export class ActionPlansService {
       resourceId: rowId,
     });
 
+    await this.invalidateRowCaches(actor.tenantId, row.actionPlanId);
     return deleted;
+  }
+
+  private async invalidateRowCaches(tenantId: string, actionPlanId: string) {
+    await invalidateSheetDataCaches(tenantId, actionPlanId);
   }
 
   private async requestOrComplete(
@@ -478,6 +491,7 @@ export class ActionPlansService {
       metadata: { tenantHasGestor: hasGestor, actorRole: actor.role },
     });
 
+    await this.invalidateRowCaches(actor.tenantId, row.actionPlanId);
     return updated;
   }
 

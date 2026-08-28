@@ -155,12 +155,34 @@ export function sheetJobLockKey(tenantId: string): string {
   return `sheet:job-lock:${tenantId}`;
 }
 
+async function cacheDelByPrefix(prefix: string): Promise<void> {
+  const redis = getCacheRedis();
+  if (!redis) return;
+  try {
+    let cursor = '0';
+    do {
+      const [next, keys] = await redis.scan(cursor, 'MATCH', `${prefix}*`, 'COUNT', 200);
+      if (keys.length > 0) await redis.del(...keys);
+      cursor = next;
+    } while (cursor !== '0');
+  } catch {
+    /* ignore */
+  }
+}
+
+export async function invalidateSheetDataCaches(
+  tenantId: string,
+  planId: string,
+): Promise<void> {
+  await Promise.all([
+    cacheDelByPrefix(`sheet:rowCount:${tenantId}:${planId}:`),
+    cacheDelByPrefix(`sheet:analytics:${tenantId}:${planId}:`),
+  ]);
+}
+
 export async function invalidateSheetCaches(tenantId: string, planId: string): Promise<void> {
-  await cacheDel(
-    sheetRowCountCacheKey(tenantId, planId),
-    sheetAnalyticsCacheKey(tenantId, planId),
-    sheetMetaCacheKey(tenantId, planId),
-  );
+  await invalidateSheetDataCaches(tenantId, planId);
+  await cacheDel(sheetMetaCacheKey(tenantId, planId));
 }
 
 export async function invalidateSheetRowCountCache(
