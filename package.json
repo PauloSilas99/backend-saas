@@ -16,7 +16,8 @@
     "migrate:dev": "prisma migrate dev",
     "seed": "tsx prisma/seed.ts",
     "prisma:generate": "prisma generate",
-    "prisma:studio": "prisma studio"
+    "prisma:studio": "prisma studio",
+    "backfill:canonical": "tsx prisma/backfill-canonical-keys.ts"
   },
   "keywords": [
     "saas",

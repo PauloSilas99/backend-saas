@@ -35,7 +35,10 @@ export class ColumnsRepository {
   create(
     tenantId: string,
     actionPlanId: string,
-    input: CreateColumnInput & { semanticRole?: ColumnSemanticRole },
+    input: CreateColumnInput & {
+      semanticRole?: ColumnSemanticRole;
+      canonicalKey?: string | null;
+    },
   ) {
     const semanticRole =
       input.semanticRole ??
@@ -50,6 +53,7 @@ export class ColumnsRepository {
         actionPlanId,
         name: input.name,
         label: input.label,
+        canonicalKey: input.canonicalKey ?? null,
         fieldType: input.fieldType,
         semanticRole,
         required: input.required,
@@ -57,6 +61,14 @@ export class ColumnsRepository {
         sortOrder: input.sortOrder,
       },
     });
+  }
+
+  async takenCanonicalKeys(actionPlanId: string): Promise<Set<string>> {
+    const rows = await this.prisma.actionColumn.findMany({
+      where: { actionPlanId, canonicalKey: { not: null } },
+      select: { canonicalKey: true },
+    });
+    return new Set(rows.map((row) => row.canonicalKey as string));
   }
 
   update(id: string, data: Prisma.ActionColumnUpdateInput) {
@@ -71,6 +83,7 @@ export class ColumnsRepository {
         isActive: false,
         deletedById,
         deleteReason: reason,
+        canonicalKey: null,
       },
     });
   }

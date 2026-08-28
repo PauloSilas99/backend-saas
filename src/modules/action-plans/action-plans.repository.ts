@@ -557,9 +557,16 @@ export class ActionPlansRepository {
     >`
       WITH cols AS (
         SELECT
-          MAX(id::text) FILTER (WHERE name = 'status') AS status_id,
-          MAX(id::text) FILTER (WHERE name = 'status_final') AS status_final_id,
           COALESCE(
+            MAX(id::text) FILTER (WHERE canonical_key = 'status_atual'),
+            MAX(id::text) FILTER (WHERE name = 'status')
+          ) AS status_id,
+          COALESCE(
+            MAX(id::text) FILTER (WHERE canonical_key = 'status_final'),
+            MAX(id::text) FILTER (WHERE name = 'status_final')
+          ) AS status_final_id,
+          COALESCE(
+            MAX(id::text) FILTER (WHERE canonical_key = 'prazo'),
             MAX(id::text) FILTER (WHERE name IN ('data_fim', 'prazo')),
             MAX(id::text) FILTER (WHERE name LIKE 'prazo%'),
             MAX(id::text) FILTER (WHERE name IN ('data_conclusao', 'data_prox_verificacao')),
@@ -631,11 +638,26 @@ export class ActionPlansRepository {
     >`
       WITH cols AS (
         SELECT
-          MAX(id::text) FILTER (WHERE name = 'status') AS status_id,
-          MAX(id::text) FILTER (WHERE name IN ('prioridade', 'priority')) AS priority_id,
-          MAX(id::text) FILTER (WHERE name IN ('indicador', 'programa', 'tema')) AS indicador_id,
-          MAX(id::text) FILTER (WHERE name = 'unidade') AS unidade_id,
-          MAX(id::text) FILTER (WHERE name = 'responsavel') AS responsavel_id
+          COALESCE(
+            MAX(id::text) FILTER (WHERE canonical_key = 'status_atual'),
+            MAX(id::text) FILTER (WHERE name = 'status')
+          ) AS status_id,
+          COALESCE(
+            MAX(id::text) FILTER (WHERE canonical_key = 'prioridade'),
+            MAX(id::text) FILTER (WHERE name IN ('prioridade', 'priority'))
+          ) AS priority_id,
+          COALESCE(
+            MAX(id::text) FILTER (WHERE canonical_key = 'tema'),
+            MAX(id::text) FILTER (WHERE name IN ('indicador', 'programa', 'tema'))
+          ) AS indicador_id,
+          COALESCE(
+            MAX(id::text) FILTER (WHERE canonical_key = 'unidade'),
+            MAX(id::text) FILTER (WHERE name = 'unidade')
+          ) AS unidade_id,
+          COALESCE(
+            MAX(id::text) FILTER (WHERE canonical_key = 'responsavel_solucao'),
+            MAX(id::text) FILTER (WHERE name = 'responsavel')
+          ) AS responsavel_id
         FROM action_columns
         WHERE action_plan_id = ${actionPlanId}
           AND deleted_at IS NULL

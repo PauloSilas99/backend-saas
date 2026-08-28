@@ -402,6 +402,7 @@ model ActionColumn {
   actionPlanId String             @map("action_plan_id")
   name         String
   label        String
+  canonicalKey String?            @map("canonical_key")
   fieldType    ColumnFieldType    @map("field_type")
   semanticRole ColumnSemanticRole @default(NONE) @map("semantic_role")
   required     Boolean            @default(false)
@@ -420,8 +421,10 @@ model ActionColumn {
   histories  ActionColumnHistory[]
 
   @@unique([actionPlanId, name])
+  @@unique([actionPlanId, canonicalKey])
   @@index([tenantId, isActive, deletedAt])
   @@index([actionPlanId, isActive, deletedAt])
+  @@index([actionPlanId, canonicalKey])
   @@map("action_columns")
 }
 

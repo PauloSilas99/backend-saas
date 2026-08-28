@@ -18,6 +18,8 @@ import {
 } from '@shared/helpers/rbac';
 import { isBlankPlanRow } from '@shared/helpers/plan-row-blank';
 import { ActionPlansRepository } from '@modules/action-plans/action-plans.repository';
+import { assignCanonicalKeys, pickCanonicalKey } from '@modules/columns/canonical-backfill';
+import { parseDateOnly } from '@modules/action-plans/project-row';
 import { ActionPlansService } from '@modules/action-plans/action-plans.service';
 import { ColumnsRepository } from '@modules/columns/columns.repository';
 import { CreateColumnInput, UpdateColumnInput } from '@modules/columns/columns.schemas';
@@ -102,6 +104,13 @@ const STATUS_MAP: Record<string, ActionStatus> = {
   concluido: ActionStatus.COMPLETED,
   delayed: ActionStatus.DELAYED,
   atrasado: ActionStatus.DELAYED,
+  'no prazo': ActionStatus.PENDING,
+  'sem prazo': ActionStatus.PENDING,
+  'em atraso': ActionStatus.DELAYED,
+  'concluído': ActionStatus.COMPLETED,
+  cancelado: ActionStatus.CANCELED,
+  cancelada: ActionStatus.CANCELED,
+  canceled: ActionStatus.CANCELED,
 };
 
 const PRIORITY_MAP: Record<string, ActionPriority> = {
@@ -234,7 +243,11 @@ export class SheetsService {
     await this.assertSheet(actor, sheetId);
     if (!canManageColumns(actor)) throw new ForbiddenError();
     await this.tenantQuota.assertCanAddColumns(sheetId, 1);
-    const column = await this.columnsRepo.create(actor.tenantId, sheetId, input);
+    const taken = await this.columnsRepo.takenCanonicalKeys(sheetId);
+    const column = await this.columnsRepo.create(actor.tenantId, sheetId, {
+      ...input,
+      canonicalKey: pickCanonicalKey(input.label, taken),
+    });
     await this.columnsRepo.addHistory({
       columnId: column.id,
       actorId: actor.id,
@@ -306,6 +319,7 @@ export class SheetsService {
     }
 
     if (input.columns && canManageColumns(actor)) {
+      const takenKeys = await this.columnsRepo.takenCanonicalKeys(plan.id);
       for (const [index, col] of input.columns.entries()) {
         const name = col.name
           .toLowerCase()
@@ -338,6 +352,7 @@ export class SheetsService {
             await this.columnsRepo.create(actor.tenantId, sheetId, {
               name,
               label: col.label,
+              canonicalKey: pickCanonicalKey(col.label, takenKeys),
               fieldType: col.fieldType ?? ColumnFieldType.TEXT,
               required: col.required ?? false,
               options: col.options,
@@ -410,6 +425,7 @@ export class SheetsService {
           sortOrder: col.sortOrder ?? index,
         })),
       );
+      const importTakenKeys = await this.columnsRepo.takenCanonicalKeys(plan.id);
       for (const [index, col] of withRoles.entries()) {
         const name = col.name
           .toLowerCase()
@@ -420,6 +436,7 @@ export class SheetsService {
           await this.columnsRepo.create(tenantId, plan.id, {
             name,
             label: col.label,
+            canonicalKey: pickCanonicalKey(col.label, importTakenKeys),
             fieldType: col.fieldType ?? ColumnFieldType.TEXT,
             semanticRole: col.semanticRole,
             required: col.required ?? false,
@@ -785,6 +802,17 @@ export class SheetsService {
       sourceColIndex: col.sourceColIndex,
     }));
 
+    const nameByCanonical = new Map<string, string>();
+    for (const assignment of assignCanonicalKeys(
+      columns.map((col, index) => ({
+        id: col.name,
+        label: col.label,
+        sortOrder: col.sortOrder ?? index,
+      })),
+    )) {
+      if (assignment.canonicalKey) nameByCanonical.set(assignment.canonicalKey, assignment.id);
+    }
+
     let planId: string | undefined;
     let imported = 0;
     let skipped = 0;
@@ -818,7 +846,14 @@ export class SheetsService {
     };
 
     const toImportRow = (values: Record<string, string>, line: number) => {
+      const canonical = (key: string): string | undefined => {
+        const name = nameByCanonical.get(key);
+        if (!name) return undefined;
+        return values[name]?.trim() || undefined;
+      };
+
       const title =
+        canonical('acoes') ??
         pickMappedValue(values, [
           'title',
           'titulo',
@@ -831,12 +866,14 @@ export class SheetsService {
         columns.map((c) => values[c.name]?.trim()).find(Boolean) ??
         `Linha ${line}`;
 
+      const canonicalDue = parseDateOnly(canonical('prazo'));
+
       return {
         title: title.slice(0, 200),
         description: pickMappedValue(values, ['descricao_fato', 'descricao', 'description']),
-        status: pickMappedValue(values, ['status']),
-        priority: pickMappedValue(values, ['prioridade', 'priority']),
-        dueDate: pickDueDateFromNamedValues(values)?.toISOString(),
+        status: canonical('status_atual') ?? pickMappedValue(values, ['status']),
+        priority: canonical('prioridade') ?? pickMappedValue(values, ['prioridade', 'priority']),
+        dueDate: (canonicalDue ?? pickDueDateFromNamedValues(values))?.toISOString(),
         values,
       };
     };
