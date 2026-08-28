@@ -137,7 +137,9 @@ export class ActionPlansService {
       status: input.status,
       priority: input.priority,
       dueDate: input.dueDate ? new Date(input.dueDate) : undefined,
-      externalKey: input.externalKey,
+      externalKey:
+        input.externalKey?.trim() ||
+        (await this.actionPlansRepository.allocateExternalKey(planId)),
     });
 
     const values = { ...(input.customFields ?? {}), ...(input.values ?? {}) };

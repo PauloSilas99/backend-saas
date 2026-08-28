@@ -20,6 +20,12 @@ import { isBlankPlanRow } from '@shared/helpers/plan-row-blank';
 import { ActionPlansRepository } from '@modules/action-plans/action-plans.repository';
 import { assignCanonicalKeys, pickCanonicalKey } from '@modules/columns/canonical-backfill';
 import { parseDateOnly } from '@modules/action-plans/project-row';
+import { CompaniesRepository } from '@modules/companies/companies.repository';
+import {
+  buildWorkbook,
+  rowsToWorkbookRows,
+  workbookFileName,
+} from './workbook-writer';
 import { ActionPlansService } from '@modules/action-plans/action-plans.service';
 import { ColumnsRepository } from '@modules/columns/columns.repository';
 import { CreateColumnInput, UpdateColumnInput } from '@modules/columns/columns.schemas';
@@ -145,7 +151,49 @@ export class SheetsService {
     @inject(ActionPlansService) private readonly plansService: ActionPlansService,
     @inject(ColumnsRepository) private readonly columnsRepo: ColumnsRepository,
     @inject(TenantQuotaService) private readonly tenantQuota: TenantQuotaService,
+    @inject(CompaniesRepository) private readonly companiesRepo: CompaniesRepository,
   ) {}
+
+  async buildTemplate(actor: AuthUser): Promise<{ buffer: Buffer; fileName: string }> {
+    if (isPlatformAdmin(actor)) throw new ForbiddenError();
+    const empresaNome = await this.empresaNome(actor.tenantId);
+    return {
+      buffer: await buildWorkbook({ empresaNome }),
+      fileName: workbookFileName(empresaNome, new Date()),
+    };
+  }
+
+  async exportSheet(
+    actor: AuthUser,
+    sheetId: string,
+  ): Promise<{ buffer: Buffer; fileName: string }> {
+    await this.assertSheet(actor, sheetId);
+    const scopeResponsibleId = isOperacional(actor) ? actor.id : undefined;
+
+    const [columns, rows, empresaNome] = await Promise.all([
+      this.columnsRepo.listActive(sheetId),
+      this.plansRepo.listRowsForExport(sheetId, actor.tenantId, scopeResponsibleId),
+      this.empresaNome(actor.tenantId),
+    ]);
+
+    const workbookRows = rowsToWorkbookRows(
+      rows.map((row) => ({
+        externalKey: row.externalKey,
+        cells: (row.cells ?? {}) as Record<string, unknown>,
+      })),
+      columns,
+    );
+
+    return {
+      buffer: await buildWorkbook({ empresaNome, rows: workbookRows }),
+      fileName: workbookFileName(empresaNome, new Date()),
+    };
+  }
+
+  private async empresaNome(tenantId: string): Promise<string> {
+    const empresa = await this.companiesRepo.findById(tenantId);
+    return empresa?.name?.trim() || 'empresa';
+  }
 
   async list(actor: AuthUser) {
     return this.plansService.listPlans(actor);
@@ -462,6 +510,7 @@ export class SheetsService {
     type PreparedRow = {
       line: number;
       title: string;
+      externalKey?: string;
       description?: string;
       status: ActionStatus;
       priority: ActionPriority;
@@ -533,6 +582,7 @@ export class SheetsService {
       prepared.push({
         line,
         title: row.title,
+        externalKey: row.externalKey?.trim() || undefined,
         description: row.description,
         status: status ?? ActionStatus.PENDING,
         priority: priority ?? ActionPriority.MEDIUM,
@@ -563,8 +613,10 @@ export class SheetsService {
       try {
         const created = await this.plansRepo.commitImportChunk({
           tenantId,
+          actionPlanId: plan.id,
           rows: slice.map((row) => ({
             actionPlanId: plan.id,
+            externalKey: row.externalKey,
             title: row.title,
             description: row.description,
             status: row.status,
@@ -870,6 +922,7 @@ export class SheetsService {
 
       return {
         title: title.slice(0, 200),
+        externalKey: canonical('id'),
         description: pickMappedValue(values, ['descricao_fato', 'descricao', 'description']),
         status: canonical('status_atual') ?? pickMappedValue(values, ['status']),
         priority: canonical('prioridade') ?? pickMappedValue(values, ['prioridade', 'priority']),

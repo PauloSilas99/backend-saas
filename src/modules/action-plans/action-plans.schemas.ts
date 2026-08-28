@@ -90,6 +90,7 @@ export const importSheetJsonSchema = z.object({
         status: z.string().optional(),
         priority: z.string().optional(),
         dueDate: z.string().optional(),
+        externalKey: z.string().max(120).optional(),
         responsibleId: z.string().uuid().optional(),
         unitId: z.string().uuid().optional(),
         values: z.record(z.string(), z.union([z.string(), z.number(), z.boolean(), z.null()])).optional(),

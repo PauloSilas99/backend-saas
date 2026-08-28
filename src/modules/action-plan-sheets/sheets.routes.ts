@@ -47,6 +47,12 @@ const parseUpload = multer({
 router.use(authenticate, subscriptionGate);
 
 router.get('/', (req, res, next) => controller.list(req, res, next));
+
+router.get(
+  '/template',
+  roleGuard(Role.GERENTE, Role.GESTOR),
+  (req, res, next) => controller.downloadTemplate(req, res, next),
+);
 router.get('/primary', (req, res, next) => controller.getPrimary(req, res, next));
 
 router.post(
@@ -99,6 +105,8 @@ router.get(
 );
 
 router.get('/:id/analytics', (req, res, next) => controller.getAnalytics(req, res, next));
+
+router.get('/:id/export', (req, res, next) => controller.exportSheet(req, res, next));
 
 router.get('/:id/my-charts', (req, res, next) => controller.getMyCharts(req, res, next));
 

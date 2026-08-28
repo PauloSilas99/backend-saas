@@ -7,8 +7,10 @@ import {
 } from '@prisma/client';
 import { setTransactionTenant } from '@shared/tenancy/prisma-tenant';
 import { isBlankPlanRow, AUTO_COLUMN_NAMES } from '@shared/helpers/plan-row-blank';
+import { PRODUCT_LIMITS } from '@shared/limits/product-limits';
 import { ListActionsQuery } from './action-plans.schemas';
 import { projectIntoCells } from './project-row';
+import { createExternalKeyAllocator } from './external-key';
 import {
   mapWorkbookAnalytics,
   type SheetAnalyticsResult,
@@ -114,8 +116,10 @@ export class ActionPlansRepository {
 
   async commitImportChunk(input: {
     tenantId: string;
+    actionPlanId: string;
     rows: Array<{
       actionPlanId: string;
+      externalKey?: string;
       title: string;
       description?: string;
       unitId?: string;
@@ -129,14 +133,78 @@ export class ActionPlansRepository {
     columnByKey: Map<string, { id: string }>;
     actorId: string;
   }) {
+    const { actionPlanId } = input;
+
+    const [planRows, columns] = await Promise.all([
+      this.prisma.actionPlanRow.findMany({
+        where: { actionPlanId },
+        select: { id: true, externalKey: true, cells: true, status: true },
+      }),
+      this.prisma.actionColumn.findMany({
+        where: { actionPlanId, deletedAt: null, canonicalKey: { not: null } },
+        select: { id: true, canonicalKey: true },
+      }),
+    ]);
+
+    const byExternalKey = new Map(
+      planRows.filter((row) => row.externalKey).map((row) => [row.externalKey as string, row]),
+    );
+    const nextExternalKey = createExternalKeyAllocator(planRows.map((row) => row.externalKey));
+
     return this.prisma.$transaction(async (tx) => {
       await setTransactionTenant(tx, input.tenantId);
-      const data = input.rows.map((row, i) => ({
-        ...row,
-        cells: buildCells(input.values[i], input.columnByKey),
-      }));
-      const result = await tx.actionPlanRow.createMany({ data });
-      return Array.from({ length: result.count }, () => ({ id: '' }));
+
+      const toCreate: Prisma.ActionPlanRowCreateManyInput[] = [];
+      let touched = 0;
+
+      for (const [index, row] of input.rows.entries()) {
+        const values = input.values[index];
+        const existing = row.externalKey ? byExternalKey.get(row.externalKey) : undefined;
+
+        if (existing) {
+          const projected = projectIntoCells({
+            cells: mergeCells(existing.cells, values, input.columnByKey) as Record<
+              string,
+              unknown
+            >,
+            columns,
+            currentStatus: existing.status,
+          });
+          await tx.actionPlanRow.update({
+            where: { id: existing.id },
+            data: {
+              deletedAt: null,
+              title: row.title,
+              description: row.description,
+              responsibleId: row.responsibleId,
+              responsibleName: row.responsibleName,
+              unitId: row.unitId,
+              cells: projected.cells as Prisma.InputJsonValue,
+              ...projected.nativePatch,
+            },
+          });
+          touched += 1;
+          continue;
+        }
+
+        const projected = projectIntoCells({
+          cells: buildCells(values, input.columnByKey) as Record<string, unknown>,
+          columns,
+        });
+        toCreate.push({
+          ...row,
+          externalKey: row.externalKey?.trim() || nextExternalKey(),
+          cells: projected.cells as Prisma.InputJsonValue,
+          ...projected.nativePatch,
+        });
+      }
+
+      if (toCreate.length > 0) {
+        const created = await tx.actionPlanRow.createMany({ data: toCreate });
+        touched += created.count;
+      }
+
+      return Array.from({ length: touched }, () => ({ id: '' }));
     });
   }
 
@@ -227,6 +295,14 @@ export class ActionPlansRepository {
       where: { tenantId },
       orderBy: { createdAt: 'asc' },
     });
+  }
+
+  async allocateExternalKey(actionPlanId: string): Promise<string> {
+    const existing = await this.prisma.actionPlanRow.findMany({
+      where: { actionPlanId },
+      select: { externalKey: true },
+    });
+    return createExternalKeyAllocator(existing.map((row) => row.externalKey))();
   }
 
   findCanonicalColumn(actionPlanId: string, canonicalKey: string) {
@@ -366,6 +442,25 @@ export class ActionPlansRepository {
       where: { id: planId, tenantId },
     });
     return deleted.count > 0;
+  }
+
+  listRowsForExport(
+    actionPlanId: string,
+    tenantId: string,
+    scopeResponsibleId?: string,
+    limit = PRODUCT_LIMITS.maxRowsPerTenant,
+  ) {
+    return this.prisma.actionPlanRow.findMany({
+      where: {
+        actionPlanId,
+        deletedAt: null,
+        actionPlan: { tenantId },
+        ...(scopeResponsibleId ? { responsibleId: scopeResponsibleId } : {}),
+      },
+      select: { externalKey: true, cells: true },
+      orderBy: { createdAt: 'asc' },
+      take: limit,
+    });
   }
 
   async listPlanRows(
@@ -754,6 +849,7 @@ export class ActionPlansRepository {
     actionPlanId: string,
     rows: Array<{
       id?: string;
+      externalKey?: string;
       title: string;
       description?: string;
       status?: ActionStatus;
@@ -777,14 +873,25 @@ export class ActionPlansRepository {
     }
     const canonicalColumns = columns.filter((col) => col.canonicalKey !== null);
 
+    const existing = await this.prisma.actionPlanRow.findMany({
+      where: { actionPlanId },
+      select: { externalKey: true },
+    });
+    const nextExternalKey = createExternalKeyAllocator(existing.map((r) => r.externalKey));
+
     await this.prisma.$transaction(
       async (tx) => {
         await setTransactionTenant(tx, tenantId);
         for (const input of rows) {
           const values = input.values ?? {};
-          if (input.id) {
+          const match = input.externalKey
+            ? { externalKey: input.externalKey, actionPlanId }
+            : input.id
+              ? { id: input.id, actionPlanId }
+              : null;
+          if (match) {
             const existing = await tx.actionPlanRow.findFirst({
-              where: { id: input.id, actionPlanId },
+              where: match,
               select: { id: true, cells: true, status: true },
             });
             if (existing) {
@@ -820,6 +927,7 @@ export class ActionPlansRepository {
             data: {
               id: input.id,
               actionPlanId,
+              externalKey: input.externalKey?.trim() || nextExternalKey(),
               title: input.title,
               description: input.description,
               status: input.status,

@@ -113,6 +113,36 @@ export class SheetsController {
     }
   }
 
+  async downloadTemplate(req: Request, res: Response, next: NextFunction) {
+    try {
+      const service = container.resolve(SheetsService);
+      const { buffer, fileName } = await service.buildTemplate(req.user!);
+      this.sendWorkbook(res, buffer, fileName);
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async exportSheet(req: Request, res: Response, next: NextFunction) {
+    try {
+      const service = container.resolve(SheetsService);
+      const { buffer, fileName } = await service.exportSheet(req.user!, req.params.id);
+      this.sendWorkbook(res, buffer, fileName);
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  private sendWorkbook(res: Response, buffer: Buffer, fileName: string) {
+    res.setHeader(
+      'Content-Type',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    );
+    res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+    res.setHeader('Content-Length', String(buffer.length));
+    res.end(buffer);
+  }
+
   async addRow(req: Request, res: Response, next: NextFunction) {
     try {
       const plans = container.resolve(ActionPlansService);
