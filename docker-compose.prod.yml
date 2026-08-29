@@ -1,0 +1,62 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: saas-pgr-api
+    restart: unless-stopped
+    env_file:
+      - .env.production
+    ports:
+      - "127.0.0.1:3340:3333"
+    volumes:
+      - uploads:/app/uploads
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - saas-pgr-net
+
+  postgres:
+    image: postgres:18-alpine
+    container_name: saas-pgr-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: saas_pgr
+      POSTGRES_USER: saas
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U saas -d saas_pgr"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - saas-pgr-net
+
+  redis:
+    image: redis:7-alpine
+    container_name: saas-pgr-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy noeviction
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - saas-pgr-net
+
+volumes:
+  pgdata:
+  redisdata:
+  uploads:
+
+networks:
+  saas-pgr-net:
+    driver: bridge
