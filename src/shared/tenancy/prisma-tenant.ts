@@ -5,6 +5,7 @@ const TENANT_ID_MODELS = new Set<string>([
   'Membership',
   'Unit',
   'ActionPlan',
+  'ActionPlanRow',
   'ActionColumn',
   'Import',
   'Risk',

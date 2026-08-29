@@ -64,6 +64,7 @@ export class ActionPlansRepository {
 
   createRow(data: {
     id?: string;
+    tenantId: string;
     actionPlanId: string;
     title: string;
     description?: string;
@@ -92,6 +93,7 @@ export class ActionPlansRepository {
     rows: Array<{
       actionPlanId: string;
       title: string;
+      tenantId: string;
       description?: string;
       unitId?: string;
       responsibleId?: string;
@@ -193,6 +195,7 @@ export class ActionPlansRepository {
         });
         toCreate.push({
           ...row,
+          tenantId: input.tenantId,
           externalKey: row.externalKey?.trim() || nextExternalKey(),
           cells: projected.cells as Prisma.InputJsonValue,
           ...projected.nativePatch,
@@ -466,7 +469,7 @@ export class ActionPlansRepository {
         ...(scopeResponsibleId ? { responsibleId: scopeResponsibleId } : {}),
       },
       select: { externalKey: true, cells: true },
-      orderBy: { createdAt: 'asc' },
+      orderBy: [{ createdAt: 'asc' }, { externalKey: 'asc' }],
       take: limit,
     });
   }
@@ -934,6 +937,7 @@ export class ActionPlansRepository {
           await tx.actionPlanRow.create({
             data: {
               id: input.id,
+              tenantId,
               actionPlanId,
               externalKey: input.externalKey?.trim() || nextExternalKey(),
               title: input.title,

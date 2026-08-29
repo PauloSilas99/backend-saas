@@ -237,6 +237,7 @@ async function main() {
     await prisma.actionPlanRow.createMany({
       data: [
         {
+          tenantId: tenant.id,
           actionPlanId: actionPlan.id,
           unitId: unitMatriz.id,
           responsibleId: operacional.id,
@@ -249,6 +250,7 @@ async function main() {
           unitName: 'Matriz',
         },
         {
+          tenantId: tenant.id,
           actionPlanId: actionPlan.id,
           unitId: unitFilial.id,
           responsibleId: operacional.id,
@@ -261,6 +263,7 @@ async function main() {
           unitName: 'Filial SP',
         },
         {
+          tenantId: tenant.id,
           actionPlanId: actionPlan.id,
           unitId: unitMatriz.id,
           responsibleId: gestor.id,
@@ -274,6 +277,7 @@ async function main() {
           unitName: 'Matriz',
         },
         {
+          tenantId: tenant.id,
           actionPlanId: actionPlan.id,
           unitId: unitFilial.id,
           responsibleId: operacional.id,

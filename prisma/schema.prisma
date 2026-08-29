@@ -215,6 +215,7 @@ model Tenant {
   calendarOverrides  CalendarOverride[]
   calendarActionOverlays CalendarActionOverlay[]
   evidences    ActionEvidence[]
+  actionPlanRows ActionPlanRow[]
 
   @@map("tenants")
 }
@@ -351,6 +352,7 @@ model ActionPlan {
 
 model ActionPlanRow {
   id              String         @id @default(uuid())
+  tenantId        String         @map("tenant_id")
   actionPlanId    String         @map("action_plan_id")
   unitId          String?        @map("unit_id")
   responsibleId   String?        @map("responsible_id")
@@ -370,6 +372,7 @@ model ActionPlanRow {
   createdAt       DateTime       @default(now()) @map("created_at")
   updatedAt       DateTime       @updatedAt @map("updated_at")
 
+  tenant      Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   actionPlan  ActionPlan      @relation(fields: [actionPlanId], references: [id], onDelete: Cascade)
   unit        Unit?           @relation(fields: [unitId], references: [id])
   responsible User?           @relation("AssignedRows", fields: [responsibleId], references: [id])
@@ -379,6 +382,8 @@ model ActionPlanRow {
   evidences        ActionEvidence[]
 
   @@unique([actionPlanId, externalKey])
+  @@index([tenantId])
+  @@index([tenantId, actionPlanId])
   @@index([actionPlanId, deletedAt, createdAt])
   @@index([actionPlanId, dueDate])
   @@index([status])

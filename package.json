@@ -8,7 +8,7 @@
     "build": "tsc && tsc-alias",
     "prestart": "npm run build",
     "start": "NODE_OPTIONS='--max-old-space-size=4096' node dist/server.js",
-    "test": "vitest run",
+    "test": "vitest run --exclude \"tests/**\"",
     "test:watch": "vitest",
     "lint": "eslint src --ext .ts || true",
     "format": "prettier --write \"src/**/*.{ts,json}\"",
@@ -17,7 +17,8 @@
     "seed": "tsx prisma/seed.ts",
     "prisma:generate": "prisma generate",
     "prisma:studio": "prisma studio",
-    "backfill:canonical": "tsx prisma/backfill-canonical-keys.ts"
+    "backfill:canonical": "tsx prisma/backfill-canonical-keys.ts",
+    "test:integration": "DATABASE_URL=\"postgresql://saas:saas@localhost:5434/saas?schema=public\" REDIS_URL=\"redis://localhost:6379\" vitest run tests"
   },
   "keywords": [
     "saas",

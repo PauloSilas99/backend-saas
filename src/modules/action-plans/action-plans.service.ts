@@ -132,6 +132,7 @@ export class ActionPlansService {
 
     const row = await this.actionPlansRepository.createRow({
       id: input.id,
+      tenantId: actor.tenantId,
       actionPlanId: planId,
       title: input.title,
       description: input.description,
@@ -441,6 +442,7 @@ export class ActionPlansService {
     await this.tenantQuota.assertCanAddRows(actor.tenantId, 1);
 
     const copy = await this.actionPlansRepository.duplicateRow(rowId, {
+      tenant: { connect: { id: actor.tenantId } },
       actionPlan: { connect: { id: row.actionPlanId } },
       title: `${row.title} (cópia)`,
       description: row.description,
