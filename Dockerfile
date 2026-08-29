@@ -1,5 +1,6 @@
 FROM node:22-alpine AS base
 WORKDIR /app
+RUN npm i -g npm@11
 COPY package*.json ./
 COPY prisma ./prisma/
 COPY prisma.config.ts ./
