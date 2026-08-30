@@ -638,6 +638,7 @@ model ActionEvidence {
   kind        EvidenceKind
   value       String?      @db.Text
   publicId    String?      @map("public_id")
+  resourceType String?     @map("resource_type")
   fileName    String?      @map("file_name")
   mimeType    String?      @map("mime_type")
   sizeBytes   Int?         @map("size_bytes")

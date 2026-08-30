@@ -15,11 +15,30 @@ export type EvidenceDownload =
   | { redirectTo: string }
   | { body: Buffer; mimeType: string };
 
+export type EvidenceResourceType = 'image' | 'video' | 'raw';
+
+export function evidenceResourceTypeFor(mimeType: string | undefined): EvidenceResourceType {
+  if (mimeType?.startsWith('image/')) return 'image';
+  if (mimeType?.startsWith('video/')) return 'video';
+  return 'raw';
+}
+
+const RESOURCE_TYPES: readonly EvidenceResourceType[] = ['image', 'video', 'raw'];
+
+export function storedResourceType(evidence: {
+  resourceType?: string | null;
+  mimeType?: string | null;
+}): EvidenceResourceType {
+  const stored = evidence.resourceType as EvidenceResourceType | null | undefined;
+  if (stored && RESOURCE_TYPES.includes(stored)) return stored;
+  return evidenceResourceTypeFor(evidence.mimeType ?? undefined);
+}
+
 export interface EvidenceStorage {
   readonly name: 'cloudinary' | 'local';
-  upload(input: EvidenceUpload): Promise<{ publicId: string }>;
-  download(publicId: string): Promise<EvidenceDownload>;
-  destroy(publicId: string): Promise<void>;
+  upload(input: EvidenceUpload): Promise<{ publicId: string; resourceType: EvidenceResourceType }>;
+  download(publicId: string, resourceType: EvidenceResourceType): Promise<EvidenceDownload>;
+  destroy(publicId: string, resourceType: EvidenceResourceType): Promise<void>;
 }
 
 const SIGNED_URL_TTL_SECONDS = 300;
@@ -38,17 +57,19 @@ export class LocalEvidenceStorage implements EvidenceStorage {
     return resolved;
   }
 
-  async upload(input: EvidenceUpload): Promise<{ publicId: string }> {
+  async upload(
+    input: EvidenceUpload,
+  ): Promise<{ publicId: string; resourceType: EvidenceResourceType }> {
     const extension = path.extname(input.fileName).slice(0, 10);
     const publicId = `${input.tenantId}/${input.planId}/${randomUUID()}${extension}`;
     const target = this.resolveInsideRoot(publicId);
     mkdirSync(path.dirname(target), { recursive: true });
     writeFileSync(target, input.buffer);
     writeFileSync(`${target}.type`, input.mimeType);
-    return { publicId };
+    return { publicId, resourceType: evidenceResourceTypeFor(input.mimeType) };
   }
 
-  async download(publicId: string): Promise<EvidenceDownload> {
+  async download(publicId: string, _resourceType?: EvidenceResourceType): Promise<EvidenceDownload> {
     const target = this.resolveInsideRoot(publicId);
     return {
       body: readFileSync(target),
@@ -56,7 +77,7 @@ export class LocalEvidenceStorage implements EvidenceStorage {
     };
   }
 
-  async destroy(publicId: string): Promise<void> {
+  async destroy(publicId: string, _resourceType?: EvidenceResourceType): Promise<void> {
     const target = this.resolveInsideRoot(publicId);
     rmSync(target, { force: true });
     rmSync(`${target}.type`, { force: true });
@@ -75,8 +96,10 @@ export class CloudinaryEvidenceStorage implements EvidenceStorage {
     });
   }
 
-  async upload(input: EvidenceUpload): Promise<{ publicId: string }> {
-    const result = await new Promise<{ public_id: string }>((resolve, reject) => {
+  async upload(
+    input: EvidenceUpload,
+  ): Promise<{ publicId: string; resourceType: EvidenceResourceType }> {
+    const result = await new Promise<{ public_id: string; resource_type?: string }>((resolve, reject) => {
       const stream = cloudinary.uploader.upload_stream(
         {
           folder: `saas-pgr/${input.tenantId}/${input.planId}`,
@@ -87,17 +110,25 @@ export class CloudinaryEvidenceStorage implements EvidenceStorage {
         },
         (error, uploaded) => {
           if (error || !uploaded) reject(error ?? new Error('Falha ao enviar evidência'));
-          else resolve(uploaded as { public_id: string });
+          else resolve(uploaded as { public_id: string; resource_type?: string });
         },
       );
       stream.end(input.buffer);
     });
-    return { publicId: result.public_id };
+    const declared = result.resource_type as EvidenceResourceType | undefined;
+    return {
+      publicId: result.public_id,
+      resourceType: declared ?? evidenceResourceTypeFor(input.mimeType),
+    };
   }
 
-  async download(publicId: string): Promise<EvidenceDownload> {
+  async download(
+    publicId: string,
+    resourceType: EvidenceResourceType,
+  ): Promise<EvidenceDownload> {
     return {
       redirectTo: cloudinary.url(publicId, {
+        resource_type: resourceType,
         type: 'authenticated',
         sign_url: true,
         secure: true,
@@ -106,8 +137,12 @@ export class CloudinaryEvidenceStorage implements EvidenceStorage {
     };
   }
 
-  async destroy(publicId: string): Promise<void> {
-    await cloudinary.uploader.destroy(publicId, { type: 'authenticated', invalidate: true });
+  async destroy(publicId: string, resourceType: EvidenceResourceType): Promise<void> {
+    await cloudinary.uploader.destroy(publicId, {
+      resource_type: resourceType,
+      type: 'authenticated',
+      invalidate: true,
+    });
   }
 }
 

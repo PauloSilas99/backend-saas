@@ -11,6 +11,7 @@ export class EvidencesRepository {
     kind: EvidenceKind;
     value?: string;
     publicId?: string;
+    resourceType?: string;
     fileName?: string;
     mimeType?: string;
     sizeBytes?: number;

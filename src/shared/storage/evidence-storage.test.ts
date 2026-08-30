@@ -2,7 +2,13 @@ import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { LocalEvidenceStorage, selectEvidenceStorage } from './evidence-storage';
+import {
+  CloudinaryEvidenceStorage,
+  LocalEvidenceStorage,
+  evidenceResourceTypeFor,
+  storedResourceType,
+  selectEvidenceStorage,
+} from './evidence-storage';
 
 describe('LocalEvidenceStorage', () => {
   let root: string;
@@ -72,5 +78,66 @@ describe('selectEvidenceStorage', () => {
     expect(
       selectEvidenceStorage({ CLOUDINARY_CLOUD_NAME: 'demo', UPLOAD_DIR: 'uploads' }).name,
     ).toBe('local');
+  });
+});
+
+describe('evidenceResourceTypeFor', () => {
+  it('trata imagem como image', () => {
+    expect(evidenceResourceTypeFor('image/png')).toBe('image');
+    expect(evidenceResourceTypeFor('image/jpeg')).toBe('image');
+  });
+
+  it('trata vídeo como video', () => {
+    expect(evidenceResourceTypeFor('video/mp4')).toBe('video');
+  });
+
+  it('trata todo o resto como raw, que é o que o Cloudinary faz', () => {
+    expect(evidenceResourceTypeFor('application/pdf')).toBe('raw');
+    expect(evidenceResourceTypeFor('text/plain')).toBe('raw');
+    expect(evidenceResourceTypeFor('application/vnd.ms-excel')).toBe('raw');
+    expect(evidenceResourceTypeFor(undefined)).toBe('raw');
+  });
+});
+
+describe('CloudinaryEvidenceStorage — URL assinada', () => {
+  const storage = new CloudinaryEvidenceStorage({
+    cloudName: 'demo',
+    apiKey: '123',
+    apiSecret: 'segredo',
+  });
+
+  it('aponta para raw quando o arquivo foi guardado como raw', async () => {
+    const result = await storage.download('pasta/arquivo.pdf', 'raw');
+    expect('redirectTo' in result && result.redirectTo).toContain('/raw/authenticated/');
+  });
+
+  it('aponta para image quando o arquivo é imagem', async () => {
+    const result = await storage.download('pasta/foto.png', 'image');
+    expect('redirectTo' in result && result.redirectTo).toContain('/image/authenticated/');
+  });
+
+  it('nunca gera URL de imagem para um PDF', async () => {
+    const result = await storage.download('pasta/laudo.pdf', 'raw');
+    expect('redirectTo' in result && result.redirectTo).not.toContain('/image/');
+  });
+});
+
+describe('storedResourceType', () => {
+  it('respeita o tipo que o Cloudinary devolveu no upload', () => {
+    expect(storedResourceType({ resourceType: 'raw', mimeType: 'image/png' })).toBe('raw');
+    expect(storedResourceType({ resourceType: 'image', mimeType: 'image/png' })).toBe('image');
+  });
+
+  it('infere pelo mime quando a evidência é anterior ao campo', () => {
+    expect(storedResourceType({ resourceType: null, mimeType: 'application/pdf' })).toBe('raw');
+    expect(storedResourceType({ resourceType: null, mimeType: 'image/jpeg' })).toBe('image');
+  });
+
+  it('cai em raw quando não há informação nenhuma', () => {
+    expect(storedResourceType({ resourceType: null, mimeType: null })).toBe('raw');
+  });
+
+  it('ignora valor gravado fora do vocabulário do Cloudinary', () => {
+    expect(storedResourceType({ resourceType: 'lixo', mimeType: 'image/png' })).toBe('image');
   });
 });

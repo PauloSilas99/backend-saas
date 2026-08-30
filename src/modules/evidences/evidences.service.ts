@@ -5,7 +5,11 @@ import { ForbiddenError, NotFoundError } from '@shared/errors/AppError';
 import { isOperacional, isPlatformAdmin } from '@shared/helpers/rbac';
 import { AuthUser } from '@/types/auth';
 import { ActionPlansRepository } from '@modules/action-plans/action-plans.repository';
-import { EvidenceStorage, selectEvidenceStorage } from '@shared/storage/evidence-storage';
+import {
+  EvidenceStorage,
+  selectEvidenceStorage,
+  storedResourceType,
+} from '@shared/storage/evidence-storage';
 import { assertEvidenceFile } from './evidence-file';
 import { EvidencesRepository } from './evidences.repository';
 
@@ -43,7 +47,7 @@ export class EvidencesService {
       size: file.size,
     });
 
-    const { publicId } = await this.storage.upload({
+    const { publicId, resourceType } = await this.storage.upload({
       buffer: file.buffer,
       fileName: file.originalname,
       mimeType,
@@ -56,6 +60,7 @@ export class EvidencesService {
       actionRowId: rowId,
       kind: EvidenceKind.ARQUIVO,
       publicId,
+      resourceType,
       fileName: file.originalname,
       mimeType,
       sizeBytes: file.size,
@@ -98,7 +103,10 @@ export class EvidencesService {
     }
     return {
       fileName: evidence.fileName ?? 'evidencia',
-      result: await this.storage.download(evidence.publicId),
+      result: await this.storage.download(
+        evidence.publicId,
+        storedResourceType(evidence),
+      ),
     };
   }
 
@@ -108,7 +116,9 @@ export class EvidencesService {
     if (!evidence || evidence.actionRowId !== rowId) {
       throw new NotFoundError('Evidência não encontrada');
     }
-    if (evidence.publicId) await this.storage.destroy(evidence.publicId);
+    if (evidence.publicId) {
+      await this.storage.destroy(evidence.publicId, storedResourceType(evidence));
+    }
     await this.evidencesRepo.remove(evidenceId);
     return { removed: true };
   }
