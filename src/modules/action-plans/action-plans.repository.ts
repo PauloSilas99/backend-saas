@@ -13,6 +13,11 @@ import { projectIntoCells } from './project-row';
 import { createExternalKeyAllocator } from './external-key';
 import { buildCrossFilterSql, resolveCrossFilters, type CrossFilter } from './cross-filter';
 import {
+  buildPeriodFilterSql,
+  PERIOD_DATE_COLUMN_KEYS,
+  type PeriodFilter,
+} from './period-filter';
+import {
   mapWorkbookAnalytics,
   type SheetAnalyticsResult,
 } from './workbook-analytics';
@@ -479,9 +484,11 @@ export class ActionPlansRepository {
     actionPlanId: string,
     tenantId: string,
     crossFilters: CrossFilter[],
+    period: PeriodFilter | null = null,
   ): Promise<string[] | null> {
     const resolved = await this.resolvePlanCrossFilters(actionPlanId, tenantId, crossFilters);
-    if (resolved.length === 0) return null;
+    const periodSql = await this.periodSqlFor(actionPlanId, tenantId, period);
+    if (resolved.length === 0 && periodSql === Prisma.empty) return null;
 
     const rows = await this.prisma.$queryRaw<Array<{ id: string }>>`
       SELECT r.id
@@ -491,6 +498,7 @@ export class ActionPlansRepository {
         AND p.tenant_id = ${tenantId}
         AND r.deleted_at IS NULL
         ${buildCrossFilterSql(resolved)}
+        ${periodSql}
     `;
     return rows.map((row) => row.id);
   }
@@ -498,13 +506,20 @@ export class ActionPlansRepository {
   async listPlanRows(
     actionPlanId: string,
     tenantId: string,
-    query: { page: number; pageSize: number; search?: string; crossFilters?: CrossFilter[] },
+    query: {
+      page: number;
+      pageSize: number;
+      search?: string;
+      crossFilters?: CrossFilter[];
+      period?: PeriodFilter | null;
+    },
     scopeResponsibleId?: string,
   ) {
     const matchedIds = await this.crossFilterMatchingRowIds(
       actionPlanId,
       tenantId,
       query.crossFilters ?? [],
+      query.period ?? null,
     );
 
     const where: Prisma.ActionPlanRowWhereInput = {
@@ -706,6 +721,36 @@ export class ActionPlansRepository {
     return this.resolvePlanCrossFilters(actionPlanId, tenantId, crossFilters);
   }
 
+  private async resolvePeriodColumnIds(
+    actionPlanId: string,
+    tenantId: string,
+    period: PeriodFilter | null,
+  ): Promise<string[]> {
+    if (!period) return [];
+    const keys = [...PERIOD_DATE_COLUMN_KEYS];
+    const columns = await this.prisma.actionColumn.findMany({
+      where: {
+        actionPlanId,
+        tenantId,
+        deletedAt: null,
+        OR: [{ canonicalKey: { in: keys } }, { name: { in: keys } }],
+      },
+      select: { id: true },
+    });
+    return columns.map((column) => column.id);
+  }
+
+  private async periodSqlFor(
+    actionPlanId: string,
+    tenantId: string,
+    period: PeriodFilter | null,
+  ): Promise<Prisma.Sql> {
+    return buildPeriodFilterSql(
+      await this.resolvePeriodColumnIds(actionPlanId, tenantId, period),
+      period,
+    );
+  }
+
   private async resolvePlanCrossFilters(
     actionPlanId: string,
     tenantId: string,
@@ -727,10 +772,12 @@ export class ActionPlansRepository {
     tenantId: string,
     scopeResponsibleId?: string,
     crossFilters: CrossFilter[] = [],
+    period: PeriodFilter | null = null,
   ): Promise<SheetAnalyticsResult> {
     const crossSql = buildCrossFilterSql(
       await this.resolvePlanCrossFilters(actionPlanId, tenantId, crossFilters),
     );
+    const periodSql = await this.periodSqlFor(actionPlanId, tenantId, period);
     const kpiRows = await this.prisma.$queryRaw<
       Array<{
         total: number;
@@ -778,6 +825,7 @@ export class ActionPlansRepository {
           AND r.deleted_at IS NULL
           ${scopeResponsibleId ? Prisma.sql`AND r.responsible_id = ${scopeResponsibleId}` : Prisma.sql``}
           ${crossSql}
+          ${periodSql}
       ),
       enriched AS (
         SELECT
@@ -862,6 +910,7 @@ export class ActionPlansRepository {
           AND r.deleted_at IS NULL
           ${scopeResponsibleId ? Prisma.sql`AND r.responsible_id = ${scopeResponsibleId}` : Prisma.sql``}
           ${crossSql}
+          ${periodSql}
       ),
       labeled AS (
         SELECT s.id, 'status'::text AS bucket,
@@ -1018,6 +1067,7 @@ export class ActionPlansRepository {
     spec: UserChartSpec,
     scopeResponsibleId?: string,
     crossFilters: CrossFilter[] = [],
+    period: PeriodFilter | null = null,
   ): Promise<UserChartSlice[]> {
     const columns = await this.prisma.actionColumn.findMany({
       where: { actionPlanId, tenantId, deletedAt: null },
@@ -1065,6 +1115,7 @@ export class ActionPlansRepository {
       ? Prisma.sql`AND r.responsible_id = ${scopeResponsibleId}`
       : Prisma.sql``;
     const crossSql = buildCrossFilterSql(resolveCrossFilters(crossFilters, columns));
+    const periodSql = await this.periodSqlFor(actionPlanId, tenantId, period);
 
     if (spec.type === 'line') {
       const rows = await this.prisma.$queryRaw<Array<{ sort_key: string; value: number }>>`
@@ -1080,6 +1131,7 @@ export class ActionPlansRepository {
             AND r.deleted_at IS NULL
             ${scopeSql}
             ${crossSql}
+            ${periodSql}
             AND NULLIF(TRIM(${source}), '') ~ '^[0-9]{4}-[0-9]{2}'
         ) months
         WHERE month_key IS NOT NULL
@@ -1107,6 +1159,7 @@ export class ActionPlansRepository {
           AND r.deleted_at IS NULL
           ${scopeSql}
           ${crossSql}
+          ${periodSql}
       ) labeled
       GROUP BY label
       ORDER BY value DESC

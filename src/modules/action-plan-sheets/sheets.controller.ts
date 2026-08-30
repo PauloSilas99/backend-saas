@@ -3,6 +3,7 @@ import { container } from 'tsyringe';
 import { ValidationError } from '@shared/errors/AppError';
 import { ActionPlansService } from '@modules/action-plans/action-plans.service';
 import { parseCrossFilterParam } from '@modules/action-plans/cross-filter';
+import { parsePeriodParam } from '@modules/action-plans/period-filter';
 import { SheetsService } from './sheets.service';
 
 export class SheetsController {
@@ -254,6 +255,7 @@ export class SheetsController {
         pageSize: Number(req.query.pageSize ?? 50),
         search: typeof req.query.search === 'string' ? req.query.search : undefined,
         crossFilters: parseCrossFilterParam(req.query.filters),
+        period: parsePeriodParam(req.query.period),
       });
       res.json({ success: true, data });
     } catch (error) {
@@ -268,6 +270,7 @@ export class SheetsController {
         req.user!,
         req.params.id,
         parseCrossFilterParam(req.query.filters),
+        parsePeriodParam(req.query.period),
       );
       res.json({ success: true, data });
     } catch (error) {
@@ -303,6 +306,7 @@ export class SheetsController {
         req.params.id,
         req.body,
         parseCrossFilterParam(req.query.filters),
+        parsePeriodParam(req.query.period),
       );
       res.json({ success: true, data });
     } catch (error) {

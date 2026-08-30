@@ -83,6 +83,10 @@ import {
 import { TenantQuotaService } from '@shared/limits/tenant-quota.service';
 import { crossFilterCacheTag, type CrossFilter } from '@modules/action-plans/cross-filter';
 import {
+  periodFilterCacheTag,
+  type PeriodFilter,
+} from '@modules/action-plans/period-filter';
+import {
   PRODUCT_LIMITS,
   columnQuotaMessage,
   importJobInProgressMessage,
@@ -269,7 +273,13 @@ export class SheetsService {
   async listRows(
     actor: AuthUser,
     sheetId: string,
-    query: { page: number; pageSize: number; search?: string; crossFilters?: CrossFilter[] },
+    query: {
+      page: number;
+      pageSize: number;
+      search?: string;
+      crossFilters?: CrossFilter[];
+      period?: PeriodFilter | null;
+    },
   ) {
     await this.assertSheet(actor, sheetId);
     const scopeResponsibleId = isOperacional(actor) ? actor.id : undefined;
@@ -1146,7 +1156,12 @@ export class SheetsService {
   /**
    * Agrega métricas no Postgres e cacheia o resumo (não transfere a planilha).
    */
-  async getAnalytics(actor: AuthUser, sheetId: string, crossFilters: CrossFilter[] = []) {
+  async getAnalytics(
+    actor: AuthUser,
+    sheetId: string,
+    crossFilters: CrossFilter[] = [],
+    period: PeriodFilter | null = null,
+  ) {
     await this.assertSheet(actor, sheetId);
     const scopeResponsibleId = isOperacional(actor) ? actor.id : undefined;
     const resolvedForCache = await this.plansRepo.resolveCrossFiltersForPlan(
@@ -1158,7 +1173,7 @@ export class SheetsService {
       actor.tenantId,
       sheetId,
       scopeResponsibleId,
-      crossFilterCacheTag(resolvedForCache),
+      `${crossFilterCacheTag(resolvedForCache)}${periodFilterCacheTag(period)}`,
     );
     const cached = await cacheGetJson<SheetAnalyticsResult>(cacheKey);
     if (cached) return cached;
@@ -1168,6 +1183,7 @@ export class SheetsService {
       actor.tenantId,
       scopeResponsibleId,
       crossFilters,
+      period,
     );
     await cacheSetJson(cacheKey, data, SHEET_META_CACHE_TTL_SEC);
     return data;
@@ -1209,6 +1225,7 @@ export class SheetsService {
     sheetId: string,
     input: ChartSeriesInput,
     crossFilters: CrossFilter[] = [],
+    period: PeriodFilter | null = null,
   ): Promise<{ series: Record<string, UserChartSlice[]> }> {
     await this.assertSheet(actor, sheetId);
     const scopeResponsibleId = isOperacional(actor) ? actor.id : undefined;
@@ -1221,6 +1238,7 @@ export class SheetsService {
           spec,
           scopeResponsibleId,
           crossFilters,
+          period,
         );
         return [spec.id, slices] as const;
       }),
