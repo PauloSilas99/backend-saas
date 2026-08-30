@@ -81,6 +81,7 @@ import {
   sheetRowCountCacheKey,
 } from '@config/redis-cache';
 import { TenantQuotaService } from '@shared/limits/tenant-quota.service';
+import { crossFilterCacheTag, type CrossFilter } from '@modules/action-plans/cross-filter';
 import {
   PRODUCT_LIMITS,
   columnQuotaMessage,
@@ -268,7 +269,7 @@ export class SheetsService {
   async listRows(
     actor: AuthUser,
     sheetId: string,
-    query: { page: number; pageSize: number; search?: string },
+    query: { page: number; pageSize: number; search?: string; crossFilters?: CrossFilter[] },
   ) {
     await this.assertSheet(actor, sheetId);
     const scopeResponsibleId = isOperacional(actor) ? actor.id : undefined;
@@ -1145,10 +1146,20 @@ export class SheetsService {
   /**
    * Agrega métricas no Postgres e cacheia o resumo (não transfere a planilha).
    */
-  async getAnalytics(actor: AuthUser, sheetId: string) {
+  async getAnalytics(actor: AuthUser, sheetId: string, crossFilters: CrossFilter[] = []) {
     await this.assertSheet(actor, sheetId);
     const scopeResponsibleId = isOperacional(actor) ? actor.id : undefined;
-    const cacheKey = sheetAnalyticsCacheKey(actor.tenantId, sheetId, scopeResponsibleId);
+    const resolvedForCache = await this.plansRepo.resolveCrossFiltersForPlan(
+      sheetId,
+      actor.tenantId,
+      crossFilters,
+    );
+    const cacheKey = sheetAnalyticsCacheKey(
+      actor.tenantId,
+      sheetId,
+      scopeResponsibleId,
+      crossFilterCacheTag(resolvedForCache),
+    );
     const cached = await cacheGetJson<SheetAnalyticsResult>(cacheKey);
     if (cached) return cached;
 
@@ -1156,6 +1167,7 @@ export class SheetsService {
       sheetId,
       actor.tenantId,
       scopeResponsibleId,
+      crossFilters,
     );
     await cacheSetJson(cacheKey, data, SHEET_META_CACHE_TTL_SEC);
     return data;
@@ -1196,6 +1208,7 @@ export class SheetsService {
     actor: AuthUser,
     sheetId: string,
     input: ChartSeriesInput,
+    crossFilters: CrossFilter[] = [],
   ): Promise<{ series: Record<string, UserChartSlice[]> }> {
     await this.assertSheet(actor, sheetId);
     const scopeResponsibleId = isOperacional(actor) ? actor.id : undefined;
@@ -1207,6 +1220,7 @@ export class SheetsService {
           actor.tenantId,
           spec,
           scopeResponsibleId,
+          crossFilters,
         );
         return [spec.id, slices] as const;
       }),

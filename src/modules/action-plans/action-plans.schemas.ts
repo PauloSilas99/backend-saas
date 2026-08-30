@@ -194,6 +194,7 @@ export const listSheetRowsQuerySchema = z.object({
   page: z.coerce.number().int().min(1).default(1),
   pageSize: z.coerce.number().int().min(1).max(PRODUCT_LIMITS.maxPageSize).default(50),
   search: z.string().optional(),
+  filters: z.string().optional(),
 });
 
 export const parseDistinctsQuerySchema = z.object({

@@ -2,6 +2,7 @@ import { Request, Response, NextFunction } from 'express';
 import { container } from 'tsyringe';
 import { ValidationError } from '@shared/errors/AppError';
 import { ActionPlansService } from '@modules/action-plans/action-plans.service';
+import { parseCrossFilterParam } from '@modules/action-plans/cross-filter';
 import { SheetsService } from './sheets.service';
 
 export class SheetsController {
@@ -252,6 +253,7 @@ export class SheetsController {
         page: Number(req.query.page ?? 1),
         pageSize: Number(req.query.pageSize ?? 50),
         search: typeof req.query.search === 'string' ? req.query.search : undefined,
+        crossFilters: parseCrossFilterParam(req.query.filters),
       });
       res.json({ success: true, data });
     } catch (error) {
@@ -262,7 +264,11 @@ export class SheetsController {
   async getAnalytics(req: Request, res: Response, next: NextFunction) {
     try {
       const service = container.resolve(SheetsService);
-      const data = await service.getAnalytics(req.user!, req.params.id);
+      const data = await service.getAnalytics(
+        req.user!,
+        req.params.id,
+        parseCrossFilterParam(req.query.filters),
+      );
       res.json({ success: true, data });
     } catch (error) {
       next(error);
@@ -292,7 +298,12 @@ export class SheetsController {
   async getChartSeries(req: Request, res: Response, next: NextFunction) {
     try {
       const service = container.resolve(SheetsService);
-      const data = await service.getChartSeries(req.user!, req.params.id, req.body);
+      const data = await service.getChartSeries(
+        req.user!,
+        req.params.id,
+        req.body,
+        parseCrossFilterParam(req.query.filters),
+      );
       res.json({ success: true, data });
     } catch (error) {
       next(error);

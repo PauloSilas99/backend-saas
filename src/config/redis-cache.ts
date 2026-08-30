@@ -135,8 +135,10 @@ export function sheetAnalyticsCacheKey(
   tenantId: string,
   planId: string,
   scopeResponsibleId?: string,
+  filterTag = '',
 ): string {
-  return `sheet:analytics:${tenantId}:${planId}:${scopeResponsibleId ?? 'all'}`;
+  const scope = scopeResponsibleId ?? 'all';
+  return `sheet:analytics:${tenantId}:${planId}:${scope}${filterTag ? `:${filterTag}` : ''}`;
 }
 
 export function sheetMetaCacheKey(tenantId: string, planId: string): string {
