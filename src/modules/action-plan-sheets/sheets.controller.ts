@@ -193,6 +193,21 @@ export class SheetsController {
     }
   }
 
+  async cancelRow(req: Request, res: Response, next: NextFunction) {
+    try {
+      const service = container.resolve(SheetsService);
+      const data = await service.cancelRow(
+        req.user!,
+        req.params.id,
+        req.params.rowId,
+        req.body,
+      );
+      res.json({ success: true, data });
+    } catch (error) {
+      next(error);
+    }
+  }
+
   async importJson(req: Request, res: Response, next: NextFunction) {
     try {
       const service = container.resolve(SheetsService);

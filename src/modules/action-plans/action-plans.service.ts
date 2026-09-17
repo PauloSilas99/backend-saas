@@ -369,13 +369,21 @@ export class ActionPlansService {
       },
     });
 
-    const cellUpdates: Record<string, string> = {};
+    const cellUpdates: Record<string, string> = {
+      status_atual: 'concluído',
+      status: 'concluído',
+      fase_acao: 'Concluída',
+      ...(input.values ?? {}),
+    };
+    if (input.comment?.trim() && !cellUpdates.comentarios?.trim()) {
+      cellUpdates.comentarios = input.comment.trim();
+    }
 
     const dataConclusao = await this.actionPlansRepository.findCanonicalColumn(
       row.actionPlanId,
       'data_conclusao',
     );
-    if (dataConclusao) {
+    if (dataConclusao && !cellUpdates[dataConclusao.id] && !cellUpdates.data_conclusao) {
       cellUpdates[dataConclusao.id] = completedAt.toISOString().slice(0, 10);
     }
 
@@ -428,6 +436,70 @@ export class ActionPlansService {
 
     await this.invalidateRowCaches(actor.tenantId, row.actionPlanId);
     return updated;
+  }
+
+  async cancel(
+    actor: AuthUser,
+    rowId: string,
+    input: import('./action-plans.schemas').CancelActionInput,
+  ) {
+    this.assertNotPlatformAdminContent(actor);
+    const row = await this.actionPlansRepository.findRow(rowId, actor.tenantId);
+    if (!row) throw new NotFoundError('Ação não encontrada');
+
+    if (isOperacional(actor) && row.responsibleId !== actor.id) {
+      throw new ForbiddenError();
+    }
+    if (!isOperacional(actor) && !canEditAnyAction(actor) && !canApproveActions(actor, false)) {
+      throw new ForbiddenError();
+    }
+
+    if (row.status === ActionStatus.COMPLETED) {
+      throw new ValidationError('Ação concluída não pode ser cancelada');
+    }
+    if (row.status === ActionStatus.CANCELED) {
+      throw new ValidationError('Esta ação já está cancelada');
+    }
+
+    const comment = input.comment.trim();
+    const cellValues: Record<string, string> = {
+      status_atual: 'cancelado',
+      status: 'cancelado',
+      status_final: 'cancelada',
+      fase_acao: 'Cancelada',
+      ...(input.values ?? {}),
+    };
+    if (!cellValues.comentarios?.trim()) {
+      cellValues.comentarios = `Cancelamento: ${comment}`;
+    }
+
+    const updated = await this.actionPlansRepository.updateRow(rowId, {
+      status: ActionStatus.CANCELED,
+      metadata: {
+        ...((row.metadata as object) ?? {}),
+        canceledAt: new Date().toISOString(),
+        cancelComment: comment,
+      },
+    });
+
+    await this.actionPlansRepository.upsertFieldValues(
+      rowId,
+      actor.tenantId,
+      cellValues,
+      row.actionPlanId,
+    );
+
+    await this.actionPlansRepository.addHistory({
+      actionRowId: rowId,
+      actorId: actor.id,
+      fromStatus: row.status,
+      toStatus: ActionStatus.CANCELED,
+      comment,
+      metadata: { reason: 'cancel' },
+    });
+
+    await this.invalidateRowCaches(actor.tenantId, row.actionPlanId);
+    return this.actionPlansRepository.findRow(rowId, actor.tenantId) ?? updated;
   }
 
   async duplicate(actor: AuthUser, rowId: string) {

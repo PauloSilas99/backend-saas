@@ -12,6 +12,7 @@ import {
   listActionsQuerySchema,
   rejectActionSchema,
   resolveActionSchema,
+  cancelActionSchema,
   transitionActionSchema,
   updateActionRowSchema,
 } from './action-plans.schemas';
@@ -77,6 +78,12 @@ router.post(
   '/rows/:rowId/resolve',
   validate({ body: resolveActionSchema }),
   (req, res, next) => controller.resolve(req, res, next),
+);
+
+router.post(
+  '/rows/:rowId/cancel',
+  validate({ body: cancelActionSchema }),
+  (req, res, next) => controller.cancel(req, res, next),
 );
 
 router.post(

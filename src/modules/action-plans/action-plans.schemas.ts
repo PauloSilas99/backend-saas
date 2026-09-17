@@ -38,6 +38,12 @@ export const resolveActionSchema = z.object({
   evidence: z.union([z.string().max(5000), structuredEvidenceSchema]).optional(),
   completedAt: z.string().datetime().optional(),
   comment: z.string().max(2000).optional(),
+  values: z.record(z.string(), z.string()).optional(),
+});
+
+export const cancelActionSchema = z.object({
+  comment: z.string().min(2).max(2000),
+  values: z.record(z.string(), z.string()).optional(),
 });
 
 export const attachEvidenceSchema = z.object({
@@ -162,6 +168,7 @@ export type TransitionActionInput = z.infer<typeof transitionActionSchema>;
 export type ApproveActionInput = z.infer<typeof approveActionSchema>;
 export type RejectActionInput = z.infer<typeof rejectActionSchema>;
 export type ResolveActionInput = z.infer<typeof resolveActionSchema>;
+export type CancelActionInput = z.infer<typeof cancelActionSchema>;
 export type BulkSheetInput = z.infer<typeof bulkSheetSchema>;
 export type ImportSheetJsonInput = z.infer<typeof importSheetJsonSchema>;
 export type ColumnsOrderInput = z.infer<typeof columnsOrderSchema>;

@@ -364,10 +364,25 @@ export class SheetsService {
     actor: AuthUser,
     sheetId: string,
     rowId: string,
-    input: { evidence?: string; completedAt?: string; comment?: string },
+    input: {
+      evidence?: unknown;
+      completedAt?: string;
+      comment?: string;
+      values?: Record<string, string>;
+    },
   ) {
     await this.assertSheet(actor, sheetId);
     return this.plansService.resolve(actor, rowId, input);
+  }
+
+  async cancelRow(
+    actor: AuthUser,
+    sheetId: string,
+    rowId: string,
+    input: { comment: string; values?: Record<string, string> },
+  ) {
+    await this.assertSheet(actor, sheetId);
+    return this.plansService.cancel(actor, rowId, input);
   }
 
   async bulkSave(actor: AuthUser, sheetId: string, input: BulkSheetInput) {

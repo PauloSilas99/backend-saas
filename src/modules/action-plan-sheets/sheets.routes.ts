@@ -21,6 +21,7 @@ import {
   listSheetRowsQuerySchema,
   parseDistinctsQuerySchema,
   resolveActionSchema,
+  cancelActionSchema,
   saveMyChartsSchema,
   updateActionRowSchema,
 } from '@modules/action-plans/action-plans.schemas';
@@ -227,6 +228,12 @@ router.post(
   '/:id/rows/:rowId/resolve',
   validate({ body: resolveActionSchema }),
   (req, res, next) => controller.resolveRow(req, res, next),
+);
+
+router.post(
+  '/:id/rows/:rowId/cancel',
+  validate({ body: cancelActionSchema }),
+  (req, res, next) => controller.cancelRow(req, res, next),
 );
 
 router.post(
