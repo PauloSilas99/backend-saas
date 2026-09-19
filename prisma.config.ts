@@ -1,5 +1,10 @@
 import 'dotenv/config';
-import { defineConfig, env } from 'prisma/config';
+import { defineConfig } from 'prisma/config';
+
+/** Generate/migrate no CI não conecta; só precisa de uma URL com formato válido. */
+const DATABASE_URL =
+  process.env.DATABASE_URL ??
+  'postgresql://build:build@127.0.0.1:5432/build?schema=public';
 
 export default defineConfig({
   schema: 'prisma/schema.prisma',
@@ -8,6 +13,6 @@ export default defineConfig({
     seed: 'tsx prisma/seed.ts',
   },
   datasource: {
-    url: env('DATABASE_URL'),
+    url: DATABASE_URL,
   },
 });

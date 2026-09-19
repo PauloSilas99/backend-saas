@@ -16,6 +16,11 @@ jobs:
   verificar:
     name: Testes e build
     runs-on: ubuntu-latest
+    env:
+      # prisma generate (Prisma 7) exige URL; não conecta ao banco neste passo
+      DATABASE_URL: postgresql://build:build@127.0.0.1:5432/build?schema=public
+      JWT_SECRET: ci-placeholder-secret-key
+      NODE_ENV: test
     steps:
       - uses: actions/checkout@v4
 
