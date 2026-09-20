@@ -1,7 +1,7 @@
 import { randomUUID } from 'crypto';
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import path from 'path';
-import { v2 as cloudinary } from 'cloudinary';
+import { v2 as cloudinary, type UploadApiErrorResponse, type UploadApiResponse } from 'cloudinary';
 
 export type EvidenceUpload = {
   buffer: Buffer;
@@ -108,9 +108,9 @@ export class CloudinaryEvidenceStorage implements EvidenceStorage {
           filename_override: input.fileName,
           use_filename: false,
         },
-        (error, uploaded) => {
+        (error: UploadApiErrorResponse | undefined, uploaded?: UploadApiResponse) => {
           if (error || !uploaded) reject(error ?? new Error('Falha ao enviar evidência'));
-          else resolve(uploaded as { public_id: string; resource_type?: string });
+          else resolve(uploaded);
         },
       );
       stream.end(input.buffer);

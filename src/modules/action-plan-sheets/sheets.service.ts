@@ -37,6 +37,7 @@ import {
   ColumnsOrderInput,
   ImportFromParseInput,
   ImportSheetJsonInput,
+  ResolveActionInput,
   SaveMyChartsInput,
 } from '@modules/action-plans/action-plans.schemas';
 import { normalizeDateValue, padRow } from './parse/sheet-cells';
@@ -360,17 +361,7 @@ export class SheetsService {
     return { reset: columns.length };
   }
 
-  async resolveRow(
-    actor: AuthUser,
-    sheetId: string,
-    rowId: string,
-    input: {
-      evidence?: unknown;
-      completedAt?: string;
-      comment?: string;
-      values?: Record<string, string>;
-    },
-  ) {
+  async resolveRow(actor: AuthUser, sheetId: string, rowId: string, input: ResolveActionInput) {
     await this.assertSheet(actor, sheetId);
     return this.plansService.resolve(actor, rowId, input);
   }
