@@ -40,42 +40,69 @@ jobs:
     needs: verificar
     runs-on: ubuntu-latest
     environment: producao
+    env:
+      VPS_HOST: ${{ secrets.VPS_HOST }}
+      VPS_USER: ${{ secrets.VPS_USER }}
+      VPS_PORT: ${{ secrets.VPS_PORT }}
+      VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+      VPS_KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
     steps:
+      - name: Conferir secrets da VPS
+        run: |
+          faltando=0
+          [ -n "$VPS_HOST" ] || { echo "Falta o secret VPS_HOST no environment producao"; faltando=1; }
+          [ -n "$VPS_USER" ] || { echo "Falta o secret VPS_USER no environment producao"; faltando=1; }
+          [ -n "$VPS_SSH_KEY" ] || { echo "Falta o secret VPS_SSH_KEY no environment producao"; faltando=1; }
+          exit "$faltando"
+
       - name: Preparar acesso SSH
         run: |
           mkdir -p ~/.ssh
-          printf '%s\n' "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/id_deploy
+          printf '%s\n' "$VPS_SSH_KEY" | tr -d '\r' > ~/.ssh/id_deploy
           chmod 600 ~/.ssh/id_deploy
-          printf '%s\n' "${{ secrets.VPS_KNOWN_HOSTS }}" > ~/.ssh/known_hosts
+          if ! ssh-keygen -y -f ~/.ssh/id_deploy >/dev/null 2>&1; then
+            echo "VPS_SSH_KEY inválida. Cole a chave privada completa, com quebras de linha reais."
+            exit 1
+          fi
+          porta="${VPS_PORT:-22}"
+          if [ -n "$VPS_KNOWN_HOSTS" ]; then
+            printf '%s\n' "$VPS_KNOWN_HOSTS" | tr -d '\r' > ~/.ssh/known_hosts
+          else
+            ssh-keyscan -T 15 -p "$porta" "$VPS_HOST" > ~/.ssh/known_hosts
+          fi
           chmod 644 ~/.ssh/known_hosts
+          if [ ! -s ~/.ssh/known_hosts ]; then
+            echo "known_hosts vazio. Confira VPS_HOST/VPS_PORT ou preencha VPS_KNOWN_HOSTS."
+            exit 1
+          fi
 
       - name: Atualizar o código e subir a imagem
-        env:
-          ALVO: ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}
-          DIRETORIO: /home/deploy/apps/saas-pgr-api
         run: |
-          ssh -i ~/.ssh/id_deploy "$ALVO" bash -eu <<EOF
-            cd "$DIRETORIO"
-            git fetch --quiet origin main
-            git reset --hard origin/main
-            docker compose -f docker-compose.prod.yml build api
-            docker compose -f docker-compose.prod.yml up -d api
-          EOF
+          porta="${VPS_PORT:-22}"
+          ssh -i ~/.ssh/id_deploy \
+            -p "$porta" \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            -o ConnectTimeout=20 \
+            -o StrictHostKeyChecking=accept-new \
+            "${VPS_USER}@${VPS_HOST}" \
+            'cd /home/deploy/apps/saas-pgr-api && git fetch --quiet origin main && git reset --hard origin/main && docker compose -f docker-compose.prod.yml build api && docker compose -f docker-compose.prod.yml up -d api'
 
       - name: Confirmar que a API respondeu
-        env:
-          ALVO: ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}
         run: |
-          ssh -i ~/.ssh/id_deploy "$ALVO" bash -eu <<'EOF'
-            for tentativa in $(seq 1 30); do
-              codigo=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 http://127.0.0.1:3340/api/v1/health || true)
-              if [ "$codigo" = "200" ]; then
-                echo "API no ar na tentativa $tentativa"
-                exit 0
-              fi
-              sleep 4
-            done
-            echo "A API não respondeu 200 em dois minutos. Últimas linhas do container:"
-            docker logs --tail 40 saas-pgr-api
-            exit 1
-          EOF
+          porta="${VPS_PORT:-22}"
+          ssh -i ~/.ssh/id_deploy \
+            -p "$porta" \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            -o ConnectTimeout=20 \
+            -o StrictHostKeyChecking=accept-new \
+            "${VPS_USER}@${VPS_HOST}" \
+            'for tentativa in $(seq 1 30); do
+               codigo=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 http://127.0.0.1:3340/api/v1/health || true)
+               if [ "$codigo" = "200" ]; then echo "API no ar na tentativa $tentativa"; exit 0; fi
+               sleep 4
+             done
+             echo "A API não respondeu 200 em dois minutos. Últimas linhas do container:"
+             docker logs --tail 40 saas-pgr-api
+             exit 1'
