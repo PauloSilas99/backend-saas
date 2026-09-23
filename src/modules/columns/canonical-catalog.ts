@@ -111,7 +111,7 @@ export const CANONICAL_COLUMNS: CanonicalColumn[] = [
 
   { key: 'periodicidade_verificacao', column: 'AK', label: 'PERIODICIDADE DE VERIFICAÇÃO', aliases: [], fieldType: T, block: 'prazos_custo' },
   { key: 'data_prox_verificacao', column: 'AL', label: 'DATA PROX VERIFICAÇÃO', aliases: ['data_proxima_verificacao'], fieldType: DATE, block: 'prazos_custo' },
-  { key: 'prazo', column: 'AM', label: 'PRAZO (AÇÕES DE MELHORIA OU IMPLEMENTAÇÃO)', aliases: ['data_fim', 'data_limite', 'vencimento', 'deadline', 'due_date'], fieldType: DATE, block: 'prazos_custo', role: 'DUE_DATE' },
+  { key: 'prazo', column: 'AM', label: 'PRAZO', aliases: ['data_fim', 'data_limite', 'vencimento', 'deadline', 'due_date', 'prazo (ações de melhoria ou implementação)'], fieldType: DATE, block: 'prazos_custo', role: 'DUE_DATE' },
   { key: 'data_conclusao', column: 'AN', label: 'DATA CONCLUSÃO', aliases: ['data_de_conclusao', 'concluido_em'], fieldType: DATE, block: 'prazos_custo', role: 'COMPLETED_AT' },
   { key: 'valor_rs', column: 'AO', label: 'VALOR R$', aliases: ['valor', 'custo'], fieldType: MONEY, block: 'prazos_custo' },
 
