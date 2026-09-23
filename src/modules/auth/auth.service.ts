@@ -35,6 +35,7 @@ import {
   PLATFORM_ACTOR_MEMBERSHIP_ID,
   PLATFORM_ACTOR_TENANT_ID,
 } from '@shared/auth/platform-scope';
+import { SKIP_ADMIN_APPROVAL } from './auth-flags';
 
 interface TokenPair {
   accessToken: string;
@@ -82,6 +83,7 @@ export class AuthService {
       tenantSlug,
       role: Role.GERENTE,
       emailVerified: !smtpConfigured,
+      activateNow: SKIP_ADMIN_APPROVAL,
     });
 
     let verify: { token: string; devUrl: string } | null = null;
@@ -101,8 +103,9 @@ export class AuthService {
       return {
         verificationRequired: true as const,
         email: result.user.email,
-        message:
-          'Conta criada. Verifique seu e-mail. Depois disso, um administrador libera o acesso.',
+        message: SKIP_ADMIN_APPROVAL
+          ? 'Conta criada. Verifique seu e-mail para entrar.'
+          : 'Conta criada. Verifique seu e-mail. Depois disso, um administrador libera o acesso.',
         ...(env.NODE_ENV !== 'production' && verify.devUrl
           ? { devVerificationUrl: verify.devUrl }
           : {}),
@@ -111,15 +114,16 @@ export class AuthService {
 
     return {
       verificationRequired: false as const,
-      pendingAdminApproval: true as const,
+      pendingAdminApproval: SKIP_ADMIN_APPROVAL ? false : true,
       email: result.user.email,
-      message:
-        'Conta criada. Aguarde um administrador liberar o acesso para você entrar.',
+      message: SKIP_ADMIN_APPROVAL
+        ? 'Conta criada. Entre com seu e-mail e senha.'
+        : 'Conta criada. Aguarde um administrador liberar o acesso para você entrar.',
     };
   }
 
   async login(input: LoginInput) {
-    const user = await this.authRepository.findUserByEmail(input.email.toLowerCase());
+    let user = await this.authRepository.findUserByEmail(input.email.toLowerCase());
     if (!user) {
       throw new UnauthorizedError('Credenciais inválidas');
     }
@@ -129,13 +133,19 @@ export class AuthService {
       throw new UnauthorizedError('Credenciais inválidas');
     }
 
+    if (SKIP_ADMIN_APPROVAL) {
+      await this.authRepository.activateUserAccess(user.id);
+      const reloaded = await this.authRepository.findUserByEmail(user.email);
+      if (reloaded) user = reloaded;
+    }
+
     if (!user.emailVerifiedAt) {
       throw new ForbiddenError(
         'E-mail ainda não confirmado. Verifique sua caixa de entrada ou reenvie o link.',
       );
     }
 
-    if (!user.isActive) {
+    if (!SKIP_ADMIN_APPROVAL && !user.isActive) {
       throw new ForbiddenError(
         'Sem acesso a conta. Aguarde a liberação do administrador.',
       );
@@ -200,7 +210,7 @@ export class AuthService {
       throw new UnauthorizedError('Refresh token inválido ou expirado');
     }
 
-    if (!stored.user.isActive) {
+    if (!SKIP_ADMIN_APPROVAL && !stored.user.isActive) {
       throw new UnauthorizedError('Usuário inativo');
     }
 
@@ -387,6 +397,9 @@ export class AuthService {
 
     await this.authRepository.markAuthTokenUsed(stored.id);
     await this.authRepository.markEmailVerified(stored.userId);
+    if (SKIP_ADMIN_APPROVAL) {
+      await this.authRepository.activateUserAccess(stored.userId);
+    }
 
     await this.mailService.send({
       to: stored.user.email,
@@ -395,15 +408,21 @@ export class AuthService {
         `Olá${stored.user.name ? `, ${stored.user.name}` : ''}!`,
         '',
         'Seu e-mail foi confirmado com sucesso.',
-        'Aguarde um administrador liberar o acesso à sua conta.',
-        'Você receberá um aviso quando puder entrar no sistema.',
+        SKIP_ADMIN_APPROVAL
+          ? 'Você já pode entrar no sistema com seu e-mail e senha.'
+          : 'Aguarde um administrador liberar o acesso à sua conta.',
+        SKIP_ADMIN_APPROVAL ? '' : 'Você receberá um aviso quando puder entrar no sistema.',
         '',
       ].join('\n'),
       html: [
         `<p>Olá${stored.user.name ? `, <strong>${stored.user.name}</strong>` : ''}!</p>`,
         `<p>Seu e-mail foi confirmado com sucesso.</p>`,
-        `<p><strong>Aguarde um administrador liberar o acesso</strong> à sua conta.</p>`,
-        `<p>Você receberá um aviso quando puder entrar no sistema.</p>`,
+        SKIP_ADMIN_APPROVAL
+          ? `<p><strong>Você já pode entrar no sistema</strong> com seu e-mail e senha.</p>`
+          : `<p><strong>Aguarde um administrador liberar o acesso</strong> à sua conta.</p>`,
+        SKIP_ADMIN_APPROVAL
+          ? ''
+          : `<p>Você receberá um aviso quando puder entrar no sistema.</p>`,
       ].join(''),
     });
 
@@ -417,8 +436,9 @@ export class AuthService {
     return {
       verified: true,
       email: stored.user.email,
-      message:
-        'E-mail confirmado. Bem-vindo! Aguarde um administrador liberar o acesso.',
+      message: SKIP_ADMIN_APPROVAL
+        ? 'E-mail confirmado. Bem-vindo! Já pode entrar no sistema.'
+        : 'E-mail confirmado. Bem-vindo! Aguarde um administrador liberar o acesso.',
     };
   }
 
@@ -540,13 +560,17 @@ export class AuthService {
         '',
         verifyUrl,
         '',
-        'Depois da confirmação, um administrador precisará liberar o acesso à sua conta.',
+        SKIP_ADMIN_APPROVAL
+          ? 'Depois da confirmação, você já pode entrar no sistema.'
+          : 'Depois da confirmação, um administrador precisará liberar o acesso à sua conta.',
         '',
       ].join('\n'),
       html: [
         `<p>Confirme seu e-mail clicando no link (válido por 24h):</p>`,
         `<p><a href="${verifyUrl}">${verifyUrl}</a></p>`,
-        `<p>Depois da confirmação, um administrador precisará liberar o acesso à sua conta.</p>`,
+        SKIP_ADMIN_APPROVAL
+          ? `<p>Depois da confirmação, você já pode entrar no sistema.</p>`
+          : `<p>Depois da confirmação, um administrador precisará liberar o acesso à sua conta.</p>`,
       ].join(''),
     });
 

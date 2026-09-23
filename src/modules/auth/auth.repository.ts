@@ -46,6 +46,8 @@ export class AuthRepository {
     role: Role;
     /** Se true, e-mail já entra como confirmado (fluxo sem SMTP). */
     emailVerified?: boolean;
+    /** Se true, usuário e membership já nascem ativos (sem fila do admin). */
+    activateNow?: boolean;
   }) {
     return this.prisma.$transaction(async (tx) => {
       const tenant = await tx.tenant.create({
@@ -62,7 +64,7 @@ export class AuthRepository {
           passwordHash: data.passwordHash,
           whatsapp: data.whatsapp,
           emailVerifiedAt: data.emailVerified ? new Date() : null,
-          isActive: false,
+          isActive: Boolean(data.activateNow),
         },
       });
 
@@ -71,7 +73,7 @@ export class AuthRepository {
           userId: user.id,
           tenantId: tenant.id,
           role: data.role,
-          isActive: false,
+          isActive: Boolean(data.activateNow),
         },
       });
 
@@ -180,6 +182,19 @@ export class AuthRepository {
       where: { id: userId },
       data: { emailVerifiedAt: new Date() },
     });
+  }
+
+  activateUserAccess(userId: string) {
+    return this.prisma.$transaction([
+      this.prisma.user.update({
+        where: { id: userId },
+        data: { isActive: true },
+      }),
+      this.prisma.membership.updateMany({
+        where: { userId },
+        data: { isActive: true },
+      }),
+    ]);
   }
 
   updatePassword(userId: string, passwordHash: string) {
