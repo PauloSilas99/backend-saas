@@ -20,20 +20,27 @@ describe('parsePeriodParam', () => {
   it('lê anos e mês', () => {
     expect(parsePeriodParam('{"years":["2026","2025"],"month":"09"}')).toEqual({
       years: ['2026', '2025'],
-      month: '09',
+      months: ['09'],
+    });
+  });
+
+  it('lê vários meses', () => {
+    expect(parsePeriodParam('{"years":[],"months":["01","09"],"month":"all"}')).toEqual({
+      years: [],
+      months: ['01', '09'],
     });
   });
 
   it('descarta ano que não é um ano de quatro dígitos', () => {
     expect(parsePeriodParam('{"years":["2026","abc","26",""],"month":"all"}')).toEqual({
       years: ['2026'],
-      month: 'all',
+      months: [],
     });
   });
 
   it('trata mês fora de 01–12 como todos os meses', () => {
-    expect(parsePeriodParam('{"years":["2026"],"month":"13"}')?.month).toBe('all');
-    expect(parsePeriodParam('{"years":["2026"],"month":""}')?.month).toBe('all');
+    expect(parsePeriodParam('{"years":["2026"],"month":"13"}')?.months).toEqual([]);
+    expect(parsePeriodParam('{"years":["2026"],"month":""}')?.months).toEqual([]);
   });
 
   it('devolve nulo quando nada restringe o período', () => {
@@ -48,11 +55,11 @@ describe('buildPeriodFilterSql', () => {
   });
 
   it('não filtra nada quando o plano não tem coluna de data', () => {
-    expect(buildPeriodFilterSql([], { years: ['2026'], month: 'all' })).toBe(Prisma.empty);
+    expect(buildPeriodFilterSql([], { years: ['2026'], months: [] })).toBe(Prisma.empty);
   });
 
   it('monta o predicado quando há coluna e período', () => {
-    const sql = buildPeriodFilterSql(['col-1'], { years: ['2026'], month: '09' });
+    const sql = buildPeriodFilterSql(['col-1'], { years: ['2026'], months: ['09'] });
 
     expect(sql).not.toBe(Prisma.empty);
     expect(sql.sql).toContain('AND');
@@ -65,15 +72,15 @@ describe('periodFilterCacheTag', () => {
   });
 
   it('muda quando o mês muda', () => {
-    const setembro = periodFilterCacheTag({ years: ['2026'], month: '09' });
-    const outubro = periodFilterCacheTag({ years: ['2026'], month: '10' });
+    const setembro = periodFilterCacheTag({ years: ['2026'], months: ['09'] });
+    const outubro = periodFilterCacheTag({ years: ['2026'], months: ['10'] });
 
     expect(setembro).not.toBe(outubro);
   });
 
   it('não depende da ordem dos anos', () => {
-    expect(periodFilterCacheTag({ years: ['2025', '2026'], month: 'all' })).toBe(
-      periodFilterCacheTag({ years: ['2026', '2025'], month: 'all' }),
+    expect(periodFilterCacheTag({ years: ['2025', '2026'], months: [] })).toBe(
+      periodFilterCacheTag({ years: ['2026', '2025'], months: [] }),
     );
   });
 });

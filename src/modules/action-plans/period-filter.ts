@@ -11,7 +11,7 @@ export const PERIOD_DATE_COLUMN_KEYS = [
   'data_verificacao',
 ] as const;
 
-export type PeriodFilter = { years: string[]; month: string };
+export type PeriodFilter = { years: string[]; months: string[] };
 
 const MAX_YEARS = 40;
 const EXCEL_EPOCH = '1899-12-30';
@@ -29,7 +29,7 @@ export function parsePeriodParam(raw: unknown): PeriodFilter | null {
   }
   if (!parsed || typeof parsed !== 'object') return null;
 
-  const candidate = parsed as { years?: unknown; month?: unknown };
+  const candidate = parsed as { years?: unknown; month?: unknown; months?: unknown };
   const years = Array.isArray(candidate.years)
     ? candidate.years
         .filter((year): year is string => typeof year === 'string' && /^\d{4}$/.test(year.trim()))
@@ -37,11 +37,22 @@ export function parsePeriodParam(raw: unknown): PeriodFilter | null {
         .slice(0, MAX_YEARS)
     : [];
 
+  const monthsFromList = Array.isArray(candidate.months)
+    ? candidate.months
+        .filter((month): month is string => typeof month === 'string' && /^(0[1-9]|1[0-2])$/.test(month.trim()))
+        .map((month) => month.trim())
+        .slice(0, 12)
+    : [];
   const rawMonth = typeof candidate.month === 'string' ? candidate.month.trim() : '';
-  const month = /^(0[1-9]|1[0-2])$/.test(rawMonth) ? rawMonth : 'all';
+  const months =
+    monthsFromList.length > 0
+      ? monthsFromList
+      : /^(0[1-9]|1[0-2])$/.test(rawMonth)
+        ? [rawMonth]
+        : [];
 
-  if (years.length === 0 && month === 'all') return null;
-  return { years, month };
+  if (years.length === 0 && months.length === 0) return null;
+  return { years, months };
 }
 
 function parsedDateSql(cellSql: Prisma.Sql): Prisma.Sql {
@@ -80,8 +91,10 @@ function matchesPeriodSql(dateSql: Prisma.Sql, period: PeriodFilter): Prisma.Sql
       Prisma.sql`to_char(${dateSql}, 'YYYY') IN (${Prisma.join(period.years)})`,
     );
   }
-  if (period.month !== 'all') {
-    partes.push(Prisma.sql`to_char(${dateSql}, 'MM') = ${period.month}`);
+  if (period.months.length > 0) {
+    partes.push(
+      Prisma.sql`to_char(${dateSql}, 'MM') IN (${Prisma.join(period.months)})`,
+    );
   }
 
   if (partes.length === 0) return Prisma.sql`true`;
@@ -110,6 +123,6 @@ export function buildPeriodFilterSql(
 export function periodFilterCacheTag(period: PeriodFilter | null): string {
   if (!period) return '';
 
-  const normalized = `${[...period.years].sort().join('|')}@${period.month}`;
+  const normalized = `${[...period.years].sort().join('|')}@${[...period.months].sort().join('|')}`;
   return createHash('sha1').update(normalized).digest('hex').slice(0, 16);
 }
