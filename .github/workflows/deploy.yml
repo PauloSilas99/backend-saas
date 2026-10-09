@@ -86,7 +86,7 @@ jobs:
             -o ConnectTimeout=20 \
             -o StrictHostKeyChecking=accept-new \
             "${VPS_USER}@${VPS_HOST}" \
-            'cd /home/deploy/apps/saas-pgr-api && git fetch --quiet origin main && git reset --hard origin/main && docker compose -f docker-compose.prod.yml build api && docker compose -f docker-compose.prod.yml up -d api'
+            'exec 9>/var/lock/vps-deploy.lock && flock -w 2700 9 || { echo "Fila de deploy da VPS ocupada por mais de 45min. Abortando."; exit 1; }; cd /home/deploy/apps/saas-pgr-api && git fetch --quiet origin main && git reset --hard origin/main && docker compose -f docker-compose.prod.yml build api && docker compose -f docker-compose.prod.yml up -d api'
 
       - name: Confirmar que a API respondeu
         run: |
