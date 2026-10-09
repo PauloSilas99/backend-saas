@@ -4,7 +4,7 @@ import { ForbiddenError, NotFoundError, ValidationError } from '@shared/errors/A
 import { AuditService } from '@shared/audit/audit.service';
 import { TenantQuotaService } from '@shared/limits/tenant-quota.service';
 import { AuthUser } from '@/types/auth';
-import { canManageColumns, isPlatformAdmin } from '@shared/helpers/rbac';
+import { canManageCadastros, canManageColumns, isPlatformAdmin } from '@shared/helpers/rbac';
 import { ActionPlansRepository } from '@modules/action-plans/action-plans.repository';
 import { ColumnsRepository } from './columns.repository';
 import {
@@ -72,7 +72,11 @@ export class ColumnsService {
 
   async update(actor: AuthUser, id: string, input: UpdateColumnInput) {
     this.assertTenantAccess(actor);
-    if (!canManageColumns(actor)) throw new ForbiddenError();
+    const optionsOnly =
+      Object.keys(input).length > 0 && Object.keys(input).every((key) => key === 'options');
+    if (!canManageColumns(actor) && !(canManageCadastros(actor) && optionsOnly)) {
+      throw new ForbiddenError();
+    }
 
     const existing = await this.columnsRepository.findById(id, actor.tenantId);
     if (!existing || existing.deletedAt) {

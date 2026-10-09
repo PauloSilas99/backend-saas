@@ -77,6 +77,10 @@ export function canManageColumns(actor: AuthUser | { role: Role }): boolean {
   return actor.role === Role.GERENTE;
 }
 
+export function canManageCadastros(actor: AuthUser | { role: Role }): boolean {
+  return actor.role === Role.GERENTE || actor.role === Role.GESTOR;
+}
+
 export function canManageCompanySettings(actor: AuthUser | { role: Role }): boolean {
   return actor.role === Role.GERENTE || actor.role === Role.PLATFORM_ADMIN;
 }

@@ -12,6 +12,7 @@ import { AuthUser } from '@/types/auth';
 import {
   canCreateActions,
   canImportSpreadsheet,
+  canManageCadastros,
   canManageColumns,
   isOperacional,
   isPlatformAdmin,
@@ -93,6 +94,7 @@ import {
   importJobInProgressMessage,
   importTruncatedMessage,
   rowQuotaMessage,
+  sheetRowQuotaMessage,
   uploadQuotaMessage,
 } from '@shared/limits/product-limits';
 import type { SheetAnalyticsResult } from '@modules/action-plans/workbook-analytics';
@@ -327,7 +329,11 @@ export class SheetsService {
     input: UpdateColumnInput,
   ) {
     await this.assertSheet(actor, sheetId);
-    if (!canManageColumns(actor)) throw new ForbiddenError();
+    const optionsOnly =
+      Object.keys(input).length > 0 && Object.keys(input).every((key) => key === 'options');
+    if (!canManageColumns(actor) && !(canManageCadastros(actor) && optionsOnly)) {
+      throw new ForbiddenError();
+    }
     const existing = await this.columnsRepo.findById(columnId, actor.tenantId, sheetId);
     if (!existing || existing.deletedAt) throw new NotFoundError('Coluna não encontrada');
     return this.columnsRepo.update(columnId, input);
@@ -386,7 +392,8 @@ export class SheetsService {
       await this.plansRepo.updatePlan(plan.id, { title: input.title });
     }
 
-    if (input.columns && canManageColumns(actor)) {
+    if (input.columns && (canManageColumns(actor) || canManageCadastros(actor))) {
+      const optionsOnly = !canManageColumns(actor);
       const takenKeys = await this.columnsRepo.takenCanonicalKeys(plan.id);
       for (const [index, col] of input.columns.entries()) {
         const name = col.name
@@ -398,13 +405,17 @@ export class SheetsService {
           ? await this.columnsRepo.findById(col.id, actor.tenantId, sheetId)
           : null;
         if (existing && !existing.deletedAt) {
-          await this.columnsRepo.update(col.id!, {
-            label: col.label,
-            fieldType: col.fieldType,
-            required: col.required,
-            options: col.options,
-            sortOrder: col.sortOrder ?? index,
-          });
+          await this.columnsRepo.update(col.id!, optionsOnly
+            ? { options: col.options }
+            : {
+                label: col.label,
+                fieldType: col.fieldType,
+                required: col.required,
+                options: col.options,
+                sortOrder: col.sortOrder ?? index,
+              });
+        } else if (optionsOnly) {
+          continue;
         } else if (existing) {
           await this.columnsRepo.update(col.id!, {
             deletedAt: null,
@@ -618,16 +629,22 @@ export class SheetsService {
       });
     }
 
-    const remaining = await this.tenantQuota.remainingRows(tenantId);
+    const remainingTenant = await this.tenantQuota.remainingRows(tenantId);
+    const remainingSheet = await this.tenantQuota.remainingSheetRows(plan.id);
+    const remaining = Math.min(remainingTenant, remainingSheet);
+    const quotaMessage =
+      remainingSheet <= remainingTenant ? sheetRowQuotaMessage() : rowQuotaMessage();
     if (remaining <= 0) {
-      throw new QuotaError(rowQuotaMessage(), {
-        limit: PRODUCT_LIMITS.maxRowsPerTenant,
+      throw new QuotaError(quotaMessage, {
+        limit: remainingSheet <= remainingTenant
+          ? PRODUCT_LIMITS.maxRowsPerSheet
+          : PRODUCT_LIMITS.maxRowsPerTenant,
       });
     }
     if (prepared.length > remaining) {
       skipped += prepared.length - remaining;
       quotaReached = true;
-      issues.push({ code: 'QUOTA_EXCEEDED', message: rowQuotaMessage() });
+      issues.push({ code: 'QUOTA_EXCEEDED', message: quotaMessage });
       prepared.length = remaining;
     }
 

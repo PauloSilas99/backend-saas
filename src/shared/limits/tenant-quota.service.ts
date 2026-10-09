@@ -5,6 +5,7 @@ import {
   PRODUCT_LIMITS,
   columnQuotaMessage,
   rowQuotaMessage,
+  sheetRowQuotaMessage,
 } from './product-limits';
 
 @injectable()
@@ -30,6 +31,29 @@ export class TenantQuotaService {
         remaining,
         additional,
         limit: PRODUCT_LIMITS.maxRowsPerTenant,
+      });
+    }
+  }
+
+  countSheetRows(actionPlanId: string) {
+    return this.prisma.actionPlanRow.count({
+      where: { actionPlanId, deletedAt: null },
+    });
+  }
+
+  async remainingSheetRows(actionPlanId: string): Promise<number> {
+    const used = await this.countSheetRows(actionPlanId);
+    return Math.max(0, PRODUCT_LIMITS.maxRowsPerSheet - used);
+  }
+
+  async assertCanAddSheetRows(actionPlanId: string, additional: number): Promise<void> {
+    if (additional <= 0) return;
+    const remaining = await this.remainingSheetRows(actionPlanId);
+    if (additional > remaining) {
+      throw new QuotaError(sheetRowQuotaMessage(), {
+        remaining,
+        additional,
+        limit: PRODUCT_LIMITS.maxRowsPerSheet,
       });
     }
   }

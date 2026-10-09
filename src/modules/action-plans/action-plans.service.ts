@@ -17,6 +17,7 @@ import { TenantQuotaService } from '@shared/limits/tenant-quota.service';
 import { invalidateSheetDataCaches } from '@config/redis-cache';
 import { EvidencesRepository } from '@modules/evidences/evidences.repository';
 import { ActionPlansRepository } from './action-plans.repository';
+import { asCellsRecord } from './row-cells';
 import { encodeEvidenceRef, normalizeEvidenceInput } from './evidence-ref';
 import {
   ApproveActionInput,
@@ -129,6 +130,7 @@ export class ActionPlansService {
     if (!plan) throw new NotFoundError('Plano de ação não encontrado');
 
     await this.tenantQuota.assertCanAddRows(actor.tenantId, 1);
+    await this.tenantQuota.assertCanAddSheetRows(planId, 1);
 
     const row = await this.actionPlansRepository.createRow({
       id: input.id,
@@ -512,6 +514,25 @@ export class ActionPlansService {
     if (!row) throw new NotFoundError('Ação não encontrada');
 
     await this.tenantQuota.assertCanAddRows(actor.tenantId, 1);
+    await this.tenantQuota.assertCanAddSheetRows(row.actionPlanId, 1);
+
+    const evidenceKeys = new Set([
+      'evidencia',
+      'evidencias',
+      'valido',
+      'validado_por',
+      'data_conclusao',
+    ]);
+    const columns = await this.actionPlansRepository.listColumnRefs(row.actionPlanId);
+    const evidenceIds = new Set(
+      columns
+        .filter((column) =>
+          evidenceKeys.has((column.canonicalKey || column.name).toLowerCase()),
+        )
+        .map((column) => column.id),
+    );
+    const cells = asCellsRecord(row.cells);
+    for (const id of evidenceIds) delete cells[id];
 
     const copy = await this.actionPlansRepository.duplicateRow(rowId, {
       tenant: { connect: { id: actor.tenantId } },
@@ -523,7 +544,7 @@ export class ActionPlansService {
       dueDate: row.dueDate,
       responsibleName: row.responsibleName,
       unitName: row.unitName,
-      cells: (row.cells as Prisma.InputJsonValue) ?? {},
+      cells: cells as Prisma.InputJsonValue,
       unit: row.unitId ? { connect: { id: row.unitId } } : undefined,
       responsible: row.responsibleId ? { connect: { id: row.responsibleId } } : undefined,
       externalKey: row.externalKey ? `${row.externalKey}-copy-${Date.now()}` : undefined,

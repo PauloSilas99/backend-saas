@@ -713,6 +713,13 @@ export class ActionPlansRepository {
     return this.prisma.actionPlanRow.create({ data });
   }
 
+  listColumnRefs(actionPlanId: string) {
+    return this.prisma.actionColumn.findMany({
+      where: { actionPlanId, deletedAt: null },
+      select: { id: true, name: true, canonicalKey: true },
+    });
+  }
+
   async resolveCrossFiltersForPlan(
     actionPlanId: string,
     tenantId: string,

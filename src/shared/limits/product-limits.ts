@@ -12,6 +12,8 @@ function intEnv(name: string, fallback: number): number {
 export const PRODUCT_LIMITS = {
   /** Linhas por empresa (inclui soft-deleted — ocupam disco). */
   maxRowsPerTenant: intEnv('MAX_ROWS_PER_TENANT', 15_000),
+  /** Teto de produto por planilha (valor inicial do usuário). */
+  maxRowsPerSheet: intEnv('MAX_ROWS_PER_SHEET', 250),
   maxColumnsPerSheet: intEnv('MAX_COLUMNS_PER_SHEET', 80),
   /** Envelope .xlsx/.xls/.csv. Não é o teto de registros. */
   maxUploadMb: intEnv('MAX_UPLOAD_MB', 50),
@@ -39,6 +41,10 @@ export function rowQuotaMessage(limit = PRODUCT_LIMITS.maxRowsPerTenant): string
     `Limite de ${limit.toLocaleString('pt-BR')} registros por empresa neste ambiente. ` +
     'Remova linhas antigas ou importe um recorte menor da planilha.'
   );
+}
+
+export function sheetRowQuotaMessage(limit = PRODUCT_LIMITS.maxRowsPerSheet): string {
+  return `Esta planilha chegou ao limite de ${limit.toLocaleString('pt-BR')} ações.`;
 }
 
 export function columnQuotaMessage(limit = PRODUCT_LIMITS.maxColumnsPerSheet): string {
