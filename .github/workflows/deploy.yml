@@ -86,7 +86,7 @@ jobs:
             -o ConnectTimeout=20 \
             -o StrictHostKeyChecking=accept-new \
             "${VPS_USER}@${VPS_HOST}" \
-            'exec 9>/var/lock/vps-deploy.lock && flock -w 2700 9 || { echo "Fila de deploy da VPS ocupada por mais de 45min. Abortando."; exit 1; }; cd /home/deploy/apps/saas-pgr-api && git fetch --quiet origin main && git reset --hard origin/main && docker compose -f docker-compose.prod.yml build api && docker compose -f docker-compose.prod.yml up -d api'
+            'exec 9>/var/lock/vps-deploy.lock; espera=0; until flock -n 9; do [ "$espera" -ge 2700 ] && { echo "Fila ocupada por mais de 45min. Abortando."; exit 1; }; echo "[$(date +%T)] aguardando a fila da VPS; em uso por: $(cat /var/lock/vps-deploy.owner 2>/dev/null || echo desconhecido)"; sleep 30; espera=$((espera+30)); done; echo "[$(date +%T)] fila liberada, iniciando deploy"; echo "${{ github.repository }} run ${{ github.run_id }}" > /var/lock/vps-deploy.owner; cd /home/deploy/apps/saas-pgr-api && git fetch --quiet origin main && git reset --hard origin/main && docker compose -f docker-compose.prod.yml build api && docker compose -f docker-compose.prod.yml up -d api'
 
       - name: Confirmar que a API respondeu
         run: |
