@@ -76,6 +76,28 @@ jobs:
             exit 1
           fi
 
+      - name: Aguardar fila da VPS
+        env:
+          SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          SSH_HOST: ${{ secrets.VPS_HOST }}
+          SSH_USER: ${{ secrets.VPS_USER }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/fila_key
+          chmod 600 ~/.ssh/fila_key
+          ssh_vps() { ssh -i ~/.ssh/fila_key -o BatchMode=yes -o StrictHostKeyChecking=accept-new "$SSH_USER@$SSH_HOST" "$1"; }
+          espera=0
+          until ssh_vps 'flock -n /var/lock/vps-deploy.lock true'; do
+            if [ "$espera" -ge 2700 ]; then
+              echo "Fila da VPS ocupada por mais de 45min. Abortando."
+              exit 1
+            fi
+            echo "[$(date +%T)] aguardando a fila da VPS; em uso por: $(ssh_vps 'cat /var/lock/vps-deploy.owner 2>/dev/null' || echo desconhecido)"
+            sleep 30
+            espera=$((espera+30))
+          done
+          echo "[$(date +%T)] fila livre; a etapa de deploy assume a trava"
+
       - name: Atualizar o código e subir a imagem
         run: |
           porta="${VPS_PORT:-22}"
